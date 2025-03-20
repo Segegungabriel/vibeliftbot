@@ -1,13 +1,102 @@
-import telegram
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackQueryHandler
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-import json
-import time
+import os
+from flask import Flask, request
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, ContextTypes
+import requests
 import logging
 
 # Set up logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Flask app for handling webhooks
+app = Flask(__name__)
+
+# Environment variables
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g., https://vibeliftbot-abc123.onrender.com/webhook
+
+# Paystack API headers
+PAYSTACK_HEADERS = {
+    "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
+    "Content-Type": "application/json"
+}
+
+# Telegram bot handlers
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Welcome to VibeLift Bot! Use /pay to make a payment of 10,000 Naira.")
+
+# Pay command to initiate a payment
+async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    email = f"{user.id}@vibeliftbot.com"  # Use a dummy email based on Telegram user ID
+    amount = 1000000  # Amount in kobo (10,000 Naira = 1,000,000 kobo)
+
+    # Create a Paystack payment request
+    paystack_url = "https://api.paystack.co/transaction/initialize"
+    payload = {
+        "email": email,
+        "amount": amount,
+        "callback_url": WEBHOOK_URL,  # Paystack will redirect here after payment
+        "metadata": {"user_id": user.id}  # Pass user_id for reference
+    }
+
+    try:
+        response = requests.post(paystack_url, json=payload, headers=PAYSTACK_HEADERS)
+        response.raise_for_status()
+        data = response.json()
+
+        if data["status"]:
+            payment_url = data["data"]["authorization_url"]
+            # Send the payment link to the user
+            keyboard = [[InlineKeyboardButton("Pay 10,000 Naira", url=payment_url)]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text("Click the button below to make a payment of 10,000 Naira:", reply_markup=reply_markup)
+        else:
+            await update.message.reply_text("Sorry, there was an error initiating the payment. Please try again.")
+    except Exception as e:
+        logger.error(f"Error initiating payment: {e}")
+        await update.message.reply_text("An error occurred. Please try again later.")
+
+# Flask route for Telegram webhook
+@app.route('/webhook', methods=['POST'])
+def telegram_webhook():
+    update = Update.de_json(request.get_json(), application.bot)
+    application.process_update(update)
+    return "OK", 200
+
+# Flask route for Paystack webhook
+@app.route('/paystack-webhook', methods=['POST'])
+def paystack_webhook():
+    # Verify the webhook signature (for security, you should implement this)
+    paystack_signature = request.headers.get('x-paystack-signature')
+    # Add signature verification logic here (using HMAC-SHA512 with PAYSTACK_SECRET_KEY)
+
+    event = request.get_json()
+    if event['event'] == 'charge.success':
+        user_id = event['data']['metadata'].get('user_id', None)
+        amount = event['data']['amount'] / 100  # Convert from kobo to NGN
+        logger.info(f"Payment successful for user {user_id}: {amount} NGN")
+        # Send a confirmation message to the user
+        application.bot.send_message(chat_id=user_id, text=f"Payment successful! You paid {amount} NGN. Thank you!")
+    return "Webhook received", 200
+
+# Main function to set up the bot and Flask server
+def main():
+    global application
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    # Add Telegram handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("pay", pay))
+
+    # Set the Telegram webhook
+    application.bot.set_webhook(url=WEBHOOK_URL)
+
+    # Start the Flask server
+    port = int(os.getenv("PORT", 5000))  # Use the PORT environment variable, default to 5000 for local testing
+    app.run(host="0.0.0.0", port=port)
 
 # Bot token
 TOKEN = '7637213737:AAHz9Kvcxj-UZhDlKyyhc9fqoD51JBSsViA'
