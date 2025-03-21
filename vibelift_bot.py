@@ -627,14 +627,15 @@ def home():
     return "VibeLift Bot is running! Interact with the bot on Telegram."
 
 @app.route('/webhook', methods=['POST'])
-async def telegram_webhook():
+def telegram_webhook():
     try:
         data = request.get_json()
         logger.info("Received Telegram webhook update: %s", data)
         update = Update.de_json(data, application.bot)
         logger.info("Parsed update: %s", update)
         logger.info("Dispatching update to handlers...")
-        await application.process_update(update)  # Use await for async processing
+        # Run the async process_update in a synchronous context
+        asyncio.run(application.process_update(update))
         logger.info("Update processed successfully")
         return "OK", 200
     except Exception as e:
@@ -651,15 +652,9 @@ def paystack_webhook():
         if str(user_id) in users['clients'] and users['clients'][str(user_id)]['order_id'] == order_id:
             users['active_orders'][order_id] = users['clients'][str(user_id)]['order_details']
             users['clients'][str(user_id)]['step'] = 'completed'
-            # Use asyncio to send messages asynchronously
-            asyncio.run_coroutine_threadsafe(
-                application.bot.send_message(chat_id=user_id, text=f"Payment of ₦{amount} approved! Your order is active."),
-                asyncio.get_event_loop()
-            )
-            asyncio.run_coroutine_threadsafe(
-                application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Paystack payment of ₦{amount} from {user_id} approved for order {order_id}"),
-                asyncio.get_event_loop()
-            )
+            # Use asyncio.run to send messages synchronously
+            asyncio.run(application.bot.send_message(chat_id=user_id, text=f"Payment of ₦{amount} approved! Your order is active."))
+            asyncio.run(application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Paystack payment of ₦{amount} from {user_id} approved for order {order_id}"))
             save_users()
     return "Webhook received", 200
 
