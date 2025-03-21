@@ -21,6 +21,7 @@ app = Flask(__name__)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+PAYSTACK_WEBHOOK_URL = os.getenv("PAYSTACK_WEBHOOK_URL", f"{WEBHOOK_URL.rsplit('/', 1)[0]}/paystack-webhook")
 
 # Paystack API headers
 PAYSTACK_HEADERS = {
@@ -222,14 +223,14 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     payload = {
         "email": email,
         "amount": amount,
-        "callback_url": WEBHOOK_URL,
+        "callback_url": PAYSTACK_WEBHOOK_URL,
         "metadata": {"user_id": user_id, "order_id": users['clients'][str(user_id)]['order_id']}
     }
     try:
         response = requests.post("https://api.paystack.co/transaction/initialize", json=payload, headers=PAYSTACK_HEADERS)
         response.raise_for_status()
         data = response.json()
-        logger.info(f"Paystack API response: {data}")  # Log the full Paystack response
+        logger.info(f"Paystack API response: {data}")
         if data["status"]:
             payment_url = data["data"]["authorization_url"]
             keyboard = [[InlineKeyboardButton(f"Pay ₦{users['clients'][str(user_id)]['amount']}", url=payment_url)]]
@@ -481,8 +482,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             order_id = f"{user_id}_{int(time.time())}"
             order_details = {
-                'handle': handle, 'platform': platform.lower(), 'follows_left': package_limits['followers'][platform.lower()][package.lower()],
-                'likes_left': 0, 'comments_left': 0, 'like_url': '', 'comment_url': '', 'order_type': order_type, 'use_recent_posts': False
+                'client_id': user_id,
+                'handle': handle,
+                'platform': platform.lower(),
+                'follows_left': package_limits['followers'][platform.lower()][package.lower()],
+                'likes_left': 0,
+                'comments_left': 0,
+                'like_url': '',
+                'comment_url': '',
+                'order_type': order_type,
+                'use_recent_posts': False
             }
             users['clients'][user_id]['step'] = 'awaiting_payment'
             users['clients'][user_id]['order_id'] = order_id
@@ -521,8 +530,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(chat_id=user_id, text=f"URL must match {platform}.")
                     return
             order_details = {
-                'handle': handle, 'platform': platform, 'follows_left': limits['follows'], 'likes_left': limits['likes'],
-                'comments_left': limits['comments'], 'like_url': like_url, 'comment_url': comment_url, 'order_type': order_type,
+                'client_id': user_id,
+                'handle': handle,
+                'platform': platform,
+                'follows_left': limits['follows'],
+                'likes_left': limits['likes'],
+                'comments_left': limits['comments'],
+                'like_url': like_url,
+                'comment_url': comment_url,
+                'order_type': order_type,
                 'use_recent_posts': use_recent_posts
             }
             amount = limits['price']
@@ -540,15 +556,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             if order_type == 'likes':
                 order_details = {
-                    'handle': handle, 'platform': platform, 'follows_left': 0, 'likes_left': package_limits['likes'][platform][package],
-                    'comments_left': 0, 'like_url': url, 'comment_url': '', 'order_type': order_type, 'use_recent_posts': False
+                    'client_id': user_id,
+                    'handle': handle,
+                    'platform': platform,
+                    'follows_left': 0,
+                    'likes_left': package_limits['likes'][platform][package],
+                    'comments_left': 0,
+                    'like_url': url,
+                    'comment_url': '',
+                    'order_type': order_type,
+                    'use_recent_posts': False
                 }
                 amount = pricing['likes'][platform][package]
             else:
                 order_details = {
-                    'handle': handle, 'platform': platform, 'follows_left': 0, 'likes_left': 0,
-                    'comments_left': package_limits['comments'][platform][package], 'like_url': '', 'comment_url': url,
-                    'order_type': order_type, 'use_recent_posts': False
+                    'client_id': user_id,
+                    'handle': handle,
+                    'platform': platform,
+                    'follows_left': 0,
+                    'likes_left': 0,
+                    'comments_left': package_limits['comments'][platform][package],
+                    'like_url': '',
+                    'comment_url': url,
+                    'order_type': order_type,
+                    'use_recent_posts': False
                 }
                 amount = pricing['comments'][platform][package]
         users['clients'][user_id]['step'] = 'awaiting_payment'
@@ -564,8 +595,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.message.photo:
             payment_id = f"{user_id}_{int(time.time())}"
             users['pending_payments'][payment_id] = {
-                'client_id': user_id, 'order_id': users['clients'][user_id]['order_id'],
-                'order_details': users['clients'][user_id]['order_details'], 'photo_id': update.message.photo[-1].file_id
+                'client_id': user_id,
+                'order_id': users['clients'][user_id]['order_id'],
+                'order_details': users['clients'][user_id]['order_details'],
+                'photo_id': update.message.photo[-1].file_id
             }
             await context.bot.send_message(chat_id=user_id, text="Payment proof submitted! Awaiting admin approval.")
             keyboard = [[InlineKeyboardButton("Approve", callback_data=f'approve_payment_{payment_id}'), InlineKeyboardButton("Reject", callback_data=f'reject_payment_{payment_id}')]]
@@ -578,7 +611,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=user_id, text="Please include a screenshot of your payment proof!")
     elif user_id in users['engagers'] and users['engagers'][user_id].get('joined') and update.message.photo:
         user_data = users['engagers'][user_id]
-        for order_id in users['active_orders']:
+        for order_id in list(users['active_orders'].keys()):
             for task_type in ['f', 'l', 'c']:
                 timer_key = f"{order_id}_{task_type}"
                 if timer_key in user_data['task_timers']:
@@ -608,6 +641,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     elif task_type == 'c':
                         order['comments_left'] -= 1
                     if order['follows_left'] <= 0 and order['likes_left'] <= 0 and order['comments_left'] <= 0:
+                        client_id = order.get('client_id')
+                        if client_id:
+                            await context.bot.send_message(chat_id=client_id, text=f"Your order for {order['handle']} on {order['platform']} has been completed! Check your account for the results.")
                         del users['active_orders'][order_id]
                     del user_data['task_timers'][timer_key]
                     await context.bot.send_message(chat_id=user_id, text=f"Task auto-approved! +₦{earnings}. Balance: ₦{user_data['earnings']}.")
@@ -661,6 +697,10 @@ async def setup_application():
 def home():
     return "VibeLift Bot is running! Interact with the bot on Telegram."
 
+@app.route('/webhook', methods=['GET'])
+def webhook_get():
+    return "This endpoint is for Telegram webhooks (POST only).", 200
+
 @app.route('/webhook', methods=['POST'])
 async def telegram_webhook():
     try:
@@ -680,13 +720,15 @@ async def telegram_webhook():
 async def paystack_webhook():
     try:
         event = request.get_json()
-        logger.info(f"Received Paystack webhook event: {event}")  # Log the full event payload
+        logger.info(f"Received Paystack webhook event: {event}")
         if event['event'] == 'charge.success':
             user_id = event['data']['metadata'].get('user_id')
             order_id = event['data']['metadata'].get('order_id')
             amount = event['data']['amount'] / 100
             if str(user_id) in users['clients'] and users['clients'][str(user_id)]['order_id'] == order_id:
-                users['active_orders'][order_id] = users['clients'][str(user_id)]['order_details']
+                order_details = users['clients'][str(user_id)]['order_details']
+                order_details['client_id'] = user_id
+                users['active_orders'][order_id] = order_details
                 users['clients'][str(user_id)]['step'] = 'completed'
                 await application.bot.send_message(chat_id=user_id, text=f"Payment of ₦{amount} approved! Your order is active.")
                 await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Paystack payment of ₦{amount} from {user_id} approved for order {order_id}")
