@@ -8,7 +8,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 import requests
 import uvicorn
-from asgiref.wsgi import WsgiToAsgi  # Import WsgiToAsgi to adapt Flask to ASGI
+from asgiref.wsgi import WsgiToAsgi
 
 # Set up logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -220,20 +220,25 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     email = f"{user_id}@vibeliftbot.com"
     amount = users['clients'][str(user_id)]['amount'] * 100  # Convert to kobo
     payload = {
-        "email": email, "amount": amount, "callback_url": WEBHOOK_URL,
+        "email": email,
+        "amount": amount,
+        "callback_url": WEBHOOK_URL,
         "metadata": {"user_id": user_id, "order_id": users['clients'][str(user_id)]['order_id']}
     }
     try:
         response = requests.post("https://api.paystack.co/transaction/initialize", json=payload, headers=PAYSTACK_HEADERS)
         response.raise_for_status()
         data = response.json()
+        logger.info(f"Paystack API response: {data}")  # Log the full Paystack response
         if data["status"]:
             payment_url = data["data"]["authorization_url"]
             keyboard = [[InlineKeyboardButton(f"Pay ₦{users['clients'][str(user_id)]['amount']}", url=payment_url)]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text("Click to pay via Paystack:", reply_markup=reply_markup)
         else:
-            await update.message.reply_text("Payment initiation failed. Try again.")
+            error_message = data.get("message", "Unknown error")
+            logger.error(f"Paystack API error: {error_message}")
+            await update.message.reply_text(f"Payment initiation failed: {error_message}. Try again.")
     except Exception as e:
         logger.error(f"Error initiating payment: {e}")
         await update.message.reply_text("An error occurred. Try again later.")
@@ -675,6 +680,7 @@ async def telegram_webhook():
 async def paystack_webhook():
     try:
         event = request.get_json()
+        logger.info(f"Received Paystack webhook event: {event}")  # Log the full event payload
         if event['event'] == 'charge.success':
             user_id = event['data']['metadata'].get('user_id')
             order_id = event['data']['metadata'].get('order_id')
@@ -697,7 +703,7 @@ async def main():
     # Start the Flask app with uvicorn, wrapped with WsgiToAsgi
     port = int(os.getenv("PORT", 5000))
     logger.info(f"Starting Flask server on port {port} with uvicorn...")
-    asgi_app = WsgiToAsgi(app)  # Wrap Flask app with WsgiToAsgi
+    asgi_app = WsgiToAsgi(app)
     config = uvicorn.Config(app=asgi_app, host="0.0.0.0", port=port, log_level="info")
     server = uvicorn.Server(config)
     await server.serve()
