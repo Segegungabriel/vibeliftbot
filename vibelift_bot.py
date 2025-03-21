@@ -4,7 +4,7 @@ import time
 import logging
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters  # Updated import
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 import requests
 
 # Set up logging
@@ -17,7 +17,7 @@ app = Flask(__name__)
 # Environment variables
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g., https://vibeliftbot-abc123.onrender.com/webhook
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 # Paystack API headers
 PAYSTACK_HEADERS = {
@@ -64,21 +64,22 @@ def check_rate_limit(user_id, is_signup_action=False):
     save_users()
     return True
 
-    async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        logger.info("Received /start command from user: %s", update.message.from_user.id)
-        user_id = update.message.from_user.id
-        if not check_rate_limit(user_id, is_signup_action=True):
-            await update.message.reply_text("Slow down! Wait 2 seconds before your next action.")
-            return
-        keyboard = [
-            [InlineKeyboardButton("Grow My Account", callback_data='client')],
-            [InlineKeyboardButton("Earn Cash", callback_data='engager')],
-            [InlineKeyboardButton("Help", callback_data='help')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("Welcome to VibeLift! Boost your vibe or earn cash—your choice!", reply_markup=reply_markup)
-        logger.info("Sent /start response to user: %s", user_id)
-        
+# Define all handlers before main()
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("Received /start command from user: %s", update.message.from_user.id)
+    user_id = update.message.from_user.id
+    if not check_rate_limit(user_id, is_signup_action=True):
+        await update.message.reply_text("Slow down! Wait 2 seconds before your next action.")
+        return
+    keyboard = [
+        [InlineKeyboardButton("Grow My Account", callback_data='client')],
+        [InlineKeyboardButton("Earn Cash", callback_data='engager')],
+        [InlineKeyboardButton("Help", callback_data='help')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Welcome to VibeLift! Boost your vibe or earn cash—your choice!", reply_markup=reply_markup)
+    logger.info("Sent /start response to user: %s", user_id)
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
     if not check_rate_limit(user_id, is_signup_action=True):
@@ -613,19 +614,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payout request:\nEngager: {user_id}\nAmount: ₦{earnings}\nAccount: {account}", reply_markup=reply_markup)
         save_users()
 
-        @app.route('/webhook', methods=['POST'])
-        def telegram_webhook():
-            try:
-                data = request.get_json()
-                logger.info("Received Telegram webhook update: %s", data)
-                update = Update.de_json(data, application.bot)
-                logger.info("Parsed update: %s", update)
-                application.process_update(update)
-                logger.info("Update processed successfully")
-                return "OK", 200
-            except Exception as e:
-                logger.error(f"Error processing webhook update: {e}")
-                return "Error", 500
+@app.route('/')
+def home():
+    return "VibeLift Bot is running! Interact with the bot on Telegram."
+
+@app.route('/webhook', methods=['POST'])
+def telegram_webhook():
+    try:
+        data = request.get_json()
+        logger.info("Received Telegram webhook update: %s", data)
+        update = Update.de_json(data, application.bot)
+        logger.info("Parsed update: %s", update)
+        application.process_update(update)
+        logger.info("Update processed successfully")
+        return "OK", 200
+    except Exception as e:
+        logger.error(f"Error processing webhook update: {e}")
+        return "Error", 500
 
 @app.route('/paystack-webhook', methods=['POST'])
 def paystack_webhook():
@@ -654,14 +659,15 @@ def main():
     application.add_handler(CommandHandler("withdraw", withdraw))
     application.add_handler(CommandHandler("pay", pay))
     application.add_handler(CallbackQueryHandler(button))
-    # Updated MessageHandler to use new filters
     application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
-    application.bot.set_webhook(url=WEBHOOK_URL)
+    try:
+        application.bot.set_webhook(url=WEBHOOK_URL)
+        logger.info(f"Webhook set successfully to {WEBHOOK_URL}")
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {e}")
+        raise
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
-@app.route('/')
-def home():
-    return "VibeLift Bot is running! Interact with the bot on Telegram."
 
 if __name__ == "__main__":
     main()
