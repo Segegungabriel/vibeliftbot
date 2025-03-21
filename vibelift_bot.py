@@ -620,7 +620,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=user_id, text="Minimum withdrawal is ₦1,000. Keep earning!")
             return
         payout_id = f"{user_id}_{int(time.time())}"
-        users['pending_payouts'][payout_id] = {'engager_id': user_id, 'amount': earnings, 'account': personally identifiable information}
+        users['pending_payouts'][payout_id] = {'engager_id': user_id, 'amount': earnings, 'account': account}
         users['engagers'][user_id]['awaiting_payout'] = False
         await context.bot.send_message(chat_id=user_id, text=f"Withdrawal request for ₦{earnings} to {account} submitted!")
         keyboard = [[InlineKeyboardButton("Approve", callback_data=f'approve_payout_{payout_id}'), InlineKeyboardButton("Reject", callback_data=f'reject_payout_{payout_id}')]]
