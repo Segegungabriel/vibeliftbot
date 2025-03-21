@@ -2,6 +2,7 @@ import os
 import json
 import time
 import logging
+import asyncio
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
@@ -44,11 +45,14 @@ try:
         if 'pending_payments' not in users:
             users['pending_payments'] = {}
 except FileNotFoundError:
-    pass
+    logger.info("users.json not found, starting with empty users dictionary")
 
 def save_users():
-    with open('users.json', 'w') as f:
-        json.dump(users, f)
+    try:
+        with open('users.json', 'w') as f:
+            json.dump(users, f)
+    except Exception as e:
+        logger.error(f"Error saving users.json: {e}")
 
 def check_rate_limit(user_id, is_signup_action=False):
     user_id_str = str(user_id)
@@ -622,22 +626,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def home():
     return "VibeLift Bot is running! Interact with the bot on Telegram."
 
-    @app.route('/webhook', methods=['POST'])
-    def telegram_webhook():
-        # The Application.run_webhook() method handles this route automatically,
-        # but we keep this for compatibility and logging
-        try:
-            data = request.get_json()
-            logger.info("Received Telegram webhook update: %s", data)
-            update = Update.de_json(data, application.bot)
-            logger.info("Parsed update: %s", update)
-            logger.info("Dispatching update to handlers...")
-            application.process_update(update)
-            logger.info("Update processed successfully")
-            return "OK", 200
-        except Exception as e:
-            logger.error(f"Error processing webhook update: {e}")
-            return "Error", 500
+@app.route('/webhook', methods=['POST'])
+async def telegram_webhook():
+    try:
+        data = request.get_json()
+        logger.info("Received Telegram webhook update: %s", data)
+        update = Update.de_json(data, application.bot)
+        logger.info("Parsed update: %s", update)
+        logger.info("Dispatching update to handlers...")
+        await application.process_update(update)  # Use await for async processing
+        logger.info("Update processed successfully")
+        return "OK", 200
+    except Exception as e:
+        logger.error(f"Error processing webhook update: {e}")
+        return "Error", 500
 
 @app.route('/paystack-webhook', methods=['POST'])
 def paystack_webhook():
@@ -649,39 +651,53 @@ def paystack_webhook():
         if str(user_id) in users['clients'] and users['clients'][str(user_id)]['order_id'] == order_id:
             users['active_orders'][order_id] = users['clients'][str(user_id)]['order_details']
             users['clients'][str(user_id)]['step'] = 'completed'
-            application.bot.send_message(chat_id=user_id, text=f"Payment of ₦{amount} approved! Your order is active.")
-            application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Paystack payment of ₦{amount} from {user_id} approved for order {order_id}")
+            # Use asyncio to send messages asynchronously
+            asyncio.run_coroutine_threadsafe(
+                application.bot.send_message(chat_id=user_id, text=f"Payment of ₦{amount} approved! Your order is active."),
+                asyncio.get_event_loop()
+            )
+            asyncio.run_coroutine_threadsafe(
+                application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Paystack payment of ₦{amount} from {user_id} approved for order {order_id}"),
+                asyncio.get_event_loop()
+            )
             save_users()
     return "Webhook received", 200
 
 def main():
     global application
-    application = Application.builder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("client", client))
-    application.add_handler(CommandHandler("engager", engager))
-    application.add_handler(CommandHandler("tasks", tasks))
-    application.add_handler(CommandHandler("balance", balance))
-    application.add_handler(CommandHandler("withdraw", withdraw))
-    application.add_handler(CommandHandler("pay", pay))
-    application.add_handler(CallbackQueryHandler(button))
-    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
     try:
-        application.bot.set_webhook(url=WEBHOOK_URL)
-        logger.info(f"Webhook set successfully to {WEBHOOK_URL}")
-    except Exception as e:
-        logger.error(f"Failed to set webhook: {e}")
-        raise
+        logger.info("Starting bot application...")
+        application = Application.builder().token(TOKEN).build()
+        logger.info("Application built successfully")
+        
+        # Register handlers
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("client", client))
+        application.add_handler(CommandHandler("engager", engager))
+        application.add_handler(CommandHandler("tasks", tasks))
+        application.add_handler(CommandHandler("balance", balance))
+        application.add_handler(CommandHandler("withdraw", withdraw))
+        application.add_handler(CommandHandler("pay", pay))
+        application.add_handler(CallbackQueryHandler(button))
+        application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
+        logger.info("Handlers registered successfully")
 
-    # Use Application.run_webhook() instead of app.run()
-    port = int(os.getenv("PORT", 5000))
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path="/webhook",
-        webhook_url=WEBHOOK_URL
-    )
+        # Set webhook
+        try:
+            asyncio.run(application.bot.set_webhook(url=WEBHOOK_URL))
+            logger.info(f"Webhook set successfully to {WEBHOOK_URL}")
+        except Exception as e:
+            logger.error(f"Failed to set webhook: {e}")
+            raise
+
+        # Start Flask server
+        port = int(os.getenv("PORT", 5000))
+        logger.info(f"Starting Flask server on port {port}...")
+        app.run(host="0.0.0.0", port=port)
+    except Exception as e:
+        logger.error(f"Error in main function: {e}")
+        raise
 
 if __name__ == "__main__":
     main()
