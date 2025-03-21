@@ -7,6 +7,7 @@ from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 import requests
+import uvicorn
 
 # Set up logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -72,11 +73,6 @@ def check_rate_limit(user_id, is_signup_action=False):
 logger.info("Building Application object...")
 application = Application.builder().token(TOKEN).build()
 logger.info("Application object built successfully")
-
-# Explicitly initialize the Application at the module level
-logger.info("Initializing Application...")
-asyncio.run(application.initialize())
-logger.info("Application initialized successfully")
 
 # Define all handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -624,7 +620,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=user_id, text="Minimum withdrawal is ₦1,000. Keep earning!")
             return
         payout_id = f"{user_id}_{int(time.time())}"
-        users['pending_payouts'][payout_id] = {'engager_id': user_id, 'amount': earnings, 'account': account}
+        users['pending_payouts'][payout_id] = {'engager_id': user_id, 'amount': earnings, 'account': personally identifiable information}
         users['engagers'][user_id]['awaiting_payout'] = False
         await context.bot.send_message(chat_id=user_id, text=f"Withdrawal request for ₦{earnings} to {account} submitted!")
         keyboard = [[InlineKeyboardButton("Approve", callback_data=f'approve_payout_{payout_id}'), InlineKeyboardButton("Reject", callback_data=f'reject_payout_{payout_id}')]]
@@ -632,42 +628,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payout request:\nEngager: {user_id}\nAmount: ₦{earnings}\nAccount: {account}", reply_markup=reply_markup)
         save_users()
 
-# Register handlers at the module level
-logger.info("Registering handlers...")
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("help", help_command))
-application.add_handler(CommandHandler("client", client))
-application.add_handler(CommandHandler("engager", engager))
-application.add_handler(CommandHandler("tasks", tasks))
-application.add_handler(CommandHandler("balance", balance))
-application.add_handler(CommandHandler("withdraw", withdraw))
-application.add_handler(CommandHandler("pay", pay))
-application.add_handler(CallbackQueryHandler(button))
-application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
-logger.info("Handlers registered successfully")
+# Async setup function to initialize the application, register handlers, and set the webhook
+async def setup_application():
+    logger.info("Initializing Application...")
+    await application.initialize()
+    logger.info("Application initialized successfully")
 
-# Set webhook at the module level
-logger.info("Setting webhook...")
-try:
-    asyncio.run(application.bot.set_webhook(url=WEBHOOK_URL))
+    logger.info("Registering handlers...")
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("client", client))
+    application.add_handler(CommandHandler("engager", engager))
+    application.add_handler(CommandHandler("tasks", tasks))
+    application.add_handler(CommandHandler("balance", balance))
+    application.add_handler(CommandHandler("withdraw", withdraw))
+    application.add_handler(CommandHandler("pay", pay))
+    application.add_handler(CallbackQueryHandler(button))
+    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
+    logger.info("Handlers registered successfully")
+
+    logger.info("Setting webhook...")
+    await application.bot.set_webhook(url=WEBHOOK_URL)
     logger.info(f"Webhook set successfully to {WEBHOOK_URL}")
-except Exception as e:
-    logger.error(f"Failed to set webhook: {e}")
-    raise
 
 @app.route('/')
 def home():
     return "VibeLift Bot is running! Interact with the bot on Telegram."
 
 @app.route('/webhook', methods=['POST'])
-def telegram_webhook():
+async def telegram_webhook():
     try:
         data = request.get_json()
         logger.info("Received Telegram webhook update: %s", data)
         update = Update.de_json(data, application.bot)
         logger.info("Parsed update: %s", update)
         logger.info("Dispatching update to handlers...")
-        asyncio.run(application.process_update(update))
+        await application.process_update(update)
         logger.info("Update processed successfully")
         return "OK", 200
     except Exception as e:
@@ -675,7 +671,7 @@ def telegram_webhook():
         return "Error", 500
 
 @app.route('/paystack-webhook', methods=['POST'])
-def paystack_webhook():
+async def paystack_webhook():
     try:
         event = request.get_json()
         if event['event'] == 'charge.success':
@@ -685,23 +681,28 @@ def paystack_webhook():
             if str(user_id) in users['clients'] and users['clients'][str(user_id)]['order_id'] == order_id:
                 users['active_orders'][order_id] = users['clients'][str(user_id)]['order_details']
                 users['clients'][str(user_id)]['step'] = 'completed'
-                asyncio.run(application.bot.send_message(chat_id=user_id, text=f"Payment of ₦{amount} approved! Your order is active."))
-                asyncio.run(application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Paystack payment of ₦{amount} from {user_id} approved for order {order_id}"))
+                await application.bot.send_message(chat_id=user_id, text=f"Payment of ₦{amount} approved! Your order is active.")
+                await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Paystack payment of ₦{amount} from {user_id} approved for order {order_id}")
                 save_users()
         return "Webhook received", 200
     except Exception as e:
         logger.error(f"Error processing Paystack webhook: {e}")
         return "Error", 500
 
-def main():
+async def main():
+    # Run the async setup
+    await setup_application()
+
+    # Start the Flask app with uvicorn
+    port = int(os.getenv("PORT", 5000))
+    logger.info(f"Starting Flask server on port {port} with uvicorn...")
+    config = uvicorn.Config(app=app, host="0.0.0.0", port=port, log_level="info")
+    server = uvicorn.Server(config)
+    await server.serve()
+
+if __name__ == "__main__":
     try:
-        logger.info("Starting Flask server...")
-        port = int(os.getenv("PORT", 5000))
-        logger.info(f"Starting Flask server on port {port}...")
-        app.run(host="0.0.0.0", port=port)
+        asyncio.run(main())
     except Exception as e:
         logger.error(f"Error in main function: {e}")
         raise
-
-if __name__ == "__main__":
-    main()
