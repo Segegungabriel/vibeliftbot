@@ -64,19 +64,21 @@ def check_rate_limit(user_id, is_signup_action=False):
     save_users()
     return True
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    if not check_rate_limit(user_id, is_signup_action=True):
-        await update.message.reply_text("Slow down! Wait 2 seconds before your next action.")
-        return
-    keyboard = [
-        [InlineKeyboardButton("Grow My Account", callback_data='client')],
-        [InlineKeyboardButton("Earn Cash", callback_data='engager')],
-        [InlineKeyboardButton("Help", callback_data='help')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Welcome to VibeLift! Boost your vibe or earn cash—your choice!", reply_markup=reply_markup)
-
+    async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        logger.info("Received /start command from user: %s", update.message.from_user.id)
+        user_id = update.message.from_user.id
+        if not check_rate_limit(user_id, is_signup_action=True):
+            await update.message.reply_text("Slow down! Wait 2 seconds before your next action.")
+            return
+        keyboard = [
+            [InlineKeyboardButton("Grow My Account", callback_data='client')],
+            [InlineKeyboardButton("Earn Cash", callback_data='engager')],
+            [InlineKeyboardButton("Help", callback_data='help')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text("Welcome to VibeLift! Boost your vibe or earn cash—your choice!", reply_markup=reply_markup)
+        logger.info("Sent /start response to user: %s", user_id)
+        
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
     if not check_rate_limit(user_id, is_signup_action=True):
@@ -611,11 +613,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payout request:\nEngager: {user_id}\nAmount: ₦{earnings}\nAccount: {account}", reply_markup=reply_markup)
         save_users()
 
-@app.route('/webhook', methods=['POST'])
-def telegram_webhook():
-    update = Update.de_json(request.get_json(), application.bot)
-    application.process_update(update)
-    return "OK", 200
+        @app.route('/webhook', methods=['POST'])
+        def telegram_webhook():
+            try:
+                data = request.get_json()
+                logger.info("Received Telegram webhook update: %s", data)
+                update = Update.de_json(data, application.bot)
+                logger.info("Parsed update: %s", update)
+                application.process_update(update)
+                logger.info("Update processed successfully")
+                return "OK", 200
+            except Exception as e:
+                logger.error(f"Error processing webhook update: {e}")
+                return "Error", 500
 
 @app.route('/paystack-webhook', methods=['POST'])
 def paystack_webhook():
@@ -649,6 +659,9 @@ def main():
     application.bot.set_webhook(url=WEBHOOK_URL)
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+@app.route('/')
+def home():
+    return "VibeLift Bot is running! Interact with the bot on Telegram."
 
 if __name__ == "__main__":
     main()
