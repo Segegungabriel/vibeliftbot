@@ -4,7 +4,7 @@ import time
 import logging
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters  # Updated import
 import requests
 
 # Set up logging
@@ -644,7 +644,8 @@ def main():
     application.add_handler(CommandHandler("withdraw", withdraw))
     application.add_handler(CommandHandler("pay", pay))
     application.add_handler(CallbackQueryHandler(button))
-    application.add_handler(MessageHandler(Filters.text | Filters.photo, handle_message))
+    # Updated MessageHandler to use new filters
+    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
     application.bot.set_webhook(url=WEBHOOK_URL)
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
