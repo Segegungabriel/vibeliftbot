@@ -716,27 +716,74 @@ async def telegram_webhook():
         logger.error(f"Error processing webhook update: {e}")
         return "Error", 500
 
-@app.route('/paystack-webhook', methods=['POST'])
-async def paystack_webhook():
-    try:
-        event = request.get_json()
-        logger.info(f"Received Paystack webhook event: {event}")
-        if event['event'] == 'charge.success':
-            user_id = event['data']['metadata'].get('user_id')
-            order_id = event['data']['metadata'].get('order_id')
-            amount = event['data']['amount'] / 100
-            if str(user_id) in users['clients'] and users['clients'][str(user_id)]['order_id'] == order_id:
-                order_details = users['clients'][str(user_id)]['order_details']
-                order_details['client_id'] = user_id
-                users['active_orders'][order_id] = order_details
-                users['clients'][str(user_id)]['step'] = 'completed'
-                await application.bot.send_message(chat_id=user_id, text=f"Payment of ₦{amount} approved! Your order is active.")
-                await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Paystack payment of ₦{amount} from {user_id} approved for order {order_id}")
-                save_users()
-        return "Webhook received", 200
-    except Exception as e:
-        logger.error(f"Error processing Paystack webhook: {e}")
-        return "Error", 500
+        @app.route('/paystack-webhook', methods=['POST', 'GET'])
+        async def paystack_webhook():
+            if request.method == 'POST':
+                try:
+                    event = request.get_json()
+                    logger.info(f"Received Paystack webhook event: {event}")
+                    if event['event'] == 'charge.success':
+                        user_id = event['data']['metadata'].get('user_id')
+                        order_id = event['data']['metadata'].get('order_id')
+                        amount = event['data']['amount'] / 100
+                        if str(user_id) in users['clients'] and users['clients'][str(user_id)]['order_id'] == order_id:
+                            order_details = users['clients'][str(user_id)]['order_details']
+                            order_details['client_id'] = user_id
+                            users['active_orders'][order_id] = order_details
+                            users['clients'][str(user_id)]['step'] = 'completed'
+                            await application.bot.send_message(chat_id=user_id, text=f"Payment of ₦{amount} approved! Your order is active.")
+                            await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Paystack payment of ₦{amount} from {user_id} approved for order {order_id}")
+                            save_users()
+                    return "Webhook received", 200
+                except Exception as e:
+                    logger.error(f"Error processing Paystack webhook: {e}")
+                    return "Error", 500
+            else:  # GET request
+                # Return an HTML page for the callback redirect
+                html_response = """
+                <!DOCTYPE html>
+                <html lang="en">
+                <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>Payment Successful - VibeLiftBot</title>
+                    <style>
+                        body {
+                            font-family: Arial, sans-serif;
+                            text-align: center;
+                            padding: 50px;
+                            background-color: #f4f4f4;
+                        }
+                        h1 {
+                            color: #28a745;
+                        }
+                        p {
+                            font-size: 18px;
+                            color: #333;
+                        }
+                        a {
+                            display: inline-block;
+                            margin-top: 20px;
+                            padding: 10px 20px;
+                            background-color: #007bff;
+                            color: white;
+                            text-decoration: none;
+                            border-radius: 5px;
+                        }
+                        a:hover {
+                            background-color: #0056b3;
+                        }
+                    </style>
+                </head>
+                <body>
+                    <h1>Payment Successful!</h1>
+                    <p>Thank you for your payment. Your order is now active.</p>
+                    <p>You can return to Telegram to continue using VibeLiftBot.</p>
+                    <a href="https://t.me/VibeLiftBot">Return to Telegram</a>
+                </body>
+                </html>
+                """
+                return html_response, 200
 
 async def main():
     # Run the async setup
