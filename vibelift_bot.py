@@ -68,7 +68,17 @@ def check_rate_limit(user_id, is_signup_action=False):
     save_users()
     return True
 
-# Define all handlers before main()
+# Initialize the Application object at the module level
+logger.info("Building Application object...")
+application = Application.builder().token(TOKEN).build()
+logger.info("Application object built successfully")
+
+# Explicitly initialize the Application at the module level
+logger.info("Initializing Application...")
+asyncio.run(application.initialize())
+logger.info("Application initialized successfully")
+
+# Define all handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         logger.info("Received /start command from user: %s", update.message.from_user.id)
@@ -622,6 +632,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payout request:\nEngager: {user_id}\nAmount: ₦{earnings}\nAccount: {account}", reply_markup=reply_markup)
         save_users()
 
+# Register handlers at the module level
+logger.info("Registering handlers...")
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("help", help_command))
+application.add_handler(CommandHandler("client", client))
+application.add_handler(CommandHandler("engager", engager))
+application.add_handler(CommandHandler("tasks", tasks))
+application.add_handler(CommandHandler("balance", balance))
+application.add_handler(CommandHandler("withdraw", withdraw))
+application.add_handler(CommandHandler("pay", pay))
+application.add_handler(CallbackQueryHandler(button))
+application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
+logger.info("Handlers registered successfully")
+
+# Set webhook at the module level
+logger.info("Setting webhook...")
+try:
+    asyncio.run(application.bot.set_webhook(url=WEBHOOK_URL))
+    logger.info(f"Webhook set successfully to {WEBHOOK_URL}")
+except Exception as e:
+    logger.error(f"Failed to set webhook: {e}")
+    raise
+
 @app.route('/')
 def home():
     return "VibeLift Bot is running! Interact with the bot on Telegram."
@@ -634,7 +667,6 @@ def telegram_webhook():
         update = Update.de_json(data, application.bot)
         logger.info("Parsed update: %s", update)
         logger.info("Dispatching update to handlers...")
-        # Run the async process_update in a synchronous context
         asyncio.run(application.process_update(update))
         logger.info("Update processed successfully")
         return "OK", 200
@@ -644,49 +676,26 @@ def telegram_webhook():
 
 @app.route('/paystack-webhook', methods=['POST'])
 def paystack_webhook():
-    event = request.get_json()
-    if event['event'] == 'charge.success':
-        user_id = event['data']['metadata'].get('user_id')
-        order_id = event['data']['metadata'].get('order_id')
-        amount = event['data']['amount'] / 100
-        if str(user_id) in users['clients'] and users['clients'][str(user_id)]['order_id'] == order_id:
-            users['active_orders'][order_id] = users['clients'][str(user_id)]['order_details']
-            users['clients'][str(user_id)]['step'] = 'completed'
-            # Use asyncio.run to send messages synchronously
-            asyncio.run(application.bot.send_message(chat_id=user_id, text=f"Payment of ₦{amount} approved! Your order is active."))
-            asyncio.run(application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Paystack payment of ₦{amount} from {user_id} approved for order {order_id}"))
-            save_users()
-    return "Webhook received", 200
+    try:
+        event = request.get_json()
+        if event['event'] == 'charge.success':
+            user_id = event['data']['metadata'].get('user_id')
+            order_id = event['data']['metadata'].get('order_id')
+            amount = event['data']['amount'] / 100
+            if str(user_id) in users['clients'] and users['clients'][str(user_id)]['order_id'] == order_id:
+                users['active_orders'][order_id] = users['clients'][str(user_id)]['order_details']
+                users['clients'][str(user_id)]['step'] = 'completed'
+                asyncio.run(application.bot.send_message(chat_id=user_id, text=f"Payment of ₦{amount} approved! Your order is active."))
+                asyncio.run(application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Paystack payment of ₦{amount} from {user_id} approved for order {order_id}"))
+                save_users()
+        return "Webhook received", 200
+    except Exception as e:
+        logger.error(f"Error processing Paystack webhook: {e}")
+        return "Error", 500
 
 def main():
-    global application
     try:
-        logger.info("Starting bot application...")
-        application = Application.builder().token(TOKEN).build()
-        logger.info("Application built successfully")
-        
-        # Register handlers
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(CommandHandler("client", client))
-        application.add_handler(CommandHandler("engager", engager))
-        application.add_handler(CommandHandler("tasks", tasks))
-        application.add_handler(CommandHandler("balance", balance))
-        application.add_handler(CommandHandler("withdraw", withdraw))
-        application.add_handler(CommandHandler("pay", pay))
-        application.add_handler(CallbackQueryHandler(button))
-        application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
-        logger.info("Handlers registered successfully")
-
-        # Set webhook
-        try:
-            asyncio.run(application.bot.set_webhook(url=WEBHOOK_URL))
-            logger.info(f"Webhook set successfully to {WEBHOOK_URL}")
-        except Exception as e:
-            logger.error(f"Failed to set webhook: {e}")
-            raise
-
-        # Start Flask server
+        logger.info("Starting Flask server...")
         port = int(os.getenv("PORT", 5000))
         logger.info(f"Starting Flask server on port {port}...")
         app.run(host="0.0.0.0", port=port)
