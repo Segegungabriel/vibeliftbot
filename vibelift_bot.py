@@ -8,6 +8,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 import requests
 import uvicorn
+from asgiref.wsgi import WsgiToAsgi  # Import WsgiToAsgi to adapt Flask to ASGI
 
 # Set up logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -693,10 +694,11 @@ async def main():
     # Run the async setup
     await setup_application()
 
-    # Start the Flask app with uvicorn
+    # Start the Flask app with uvicorn, wrapped with WsgiToAsgi
     port = int(os.getenv("PORT", 5000))
     logger.info(f"Starting Flask server on port {port} with uvicorn...")
-    config = uvicorn.Config(app=app, host="0.0.0.0", port=port, log_level="info")
+    asgi_app = WsgiToAsgi(app)  # Wrap Flask app with WsgiToAsgi
+    config = uvicorn.Config(app=asgi_app, host="0.0.0.0", port=port, log_level="info")
     server = uvicorn.Server(config)
     await server.serve()
 
