@@ -60,10 +60,14 @@ def save_users():
     except Exception as e:
         logger.error(f"Error saving {STORAGE_PATH}: {e}")
 
+
 def check_rate_limit(user_id, is_signup_action=False, action=None):
     user_id_str = str(user_id)
     current_time = time.time()
     last_time = users['last_interaction'].get(user_id_str, 0)
+    time_diff = current_time - last_time
+    
+    logger.info(f"Rate limit check: user={user_id_str}, action={action}, is_signup={is_signup_action}, last_time={last_time}, current_time={current_time}, diff={time_diff:.2f}s")
     
     # Bypass for engagers on tasks/balance
     if action in ['tasks', 'balance'] and user_id_str in users['engagers'] and users['engagers'][user_id_str].get('joined'):
@@ -72,23 +76,25 @@ def check_rate_limit(user_id, is_signup_action=False, action=None):
         save_users()
         return True
     
-    # Signup actions (e.g., client, engager, help): 1-second limit
+    # Signup actions: 1-second limit
     if is_signup_action:
-        if current_time - last_time < 1:  # Reduced from 2 to 1
-            logger.info(f"User {user_id_str} rate limited for signup action")
+        if time_diff < 1:
+            logger.info(f"User {user_id_str} rate limited for signup action (diff={time_diff:.2f}s < 1s)")
             return False
-        # Update timestamp only if action succeeds
+        logger.info(f"User {user_id_str} passed signup rate limit (diff={time_diff:.2f}s >= 1s)")
         users['last_interaction'][user_id_str] = current_time
         save_users()
         return True
     
     # Other actions: 2-second limit
-    if current_time - last_time < 2:
-        logger.info(f"User {user_id_str} rate limited for action {action}")
+    if time_diff < 2:
+        logger.info(f"User {user_id_str} rate limited for action {action} (diff={time_diff:.2f}s < 2s)")
         return False
+    logger.info(f"User {user_id_str} passed rate limit for action {action} (diff={time_diff:.2f}s >= 2s)")
     users['last_interaction'][user_id_str] = current_time
     save_users()
     return True
+
 
 # Initialize the Application object
 logger.info("Building Application object...")
