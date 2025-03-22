@@ -760,7 +760,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Order received! Pay ₦{amount} to: 8101062411 OPay or use /pay.", reply_markup=reply_markup)
         await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"New order from {user_id}: {handle} {platform} {package} ({order_type}). Awaiting payment.")
         save_users()
-    elif user_id in users['clients'] and users['clients'][user_id]['step'] == 'awaiting_payment' and 'proof' of text:
+    elif user_id in users['clients'] and users['clients'][user_id]['step'] == 'awaiting_payment' and 'proof' in text:
         if update.message.photo:
             payment_id = f"{user_id}_{int(time.time())}"
             users['pending_payments'][payment_id] = {
