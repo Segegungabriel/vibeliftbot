@@ -60,7 +60,7 @@ def save_users():
     except Exception as e:
         logger.error(f"Error saving {STORAGE_PATH}: {e}")
 
-
+# Updated check_rate_limit: Bypass for /start menu buttons
 def check_rate_limit(user_id, is_signup_action=False, action=None):
     user_id_str = str(user_id)
     current_time = time.time()
@@ -68,6 +68,13 @@ def check_rate_limit(user_id, is_signup_action=False, action=None):
     time_diff = current_time - last_time
     
     logger.info(f"Rate limit check: user={user_id_str}, action={action}, is_signup={is_signup_action}, last_time={last_time}, current_time={current_time}, diff={time_diff:.2f}s")
+    
+    # Bypass rate limit for /start menu buttons: client, engager, help
+    if action in ['client', 'engager', 'help']:
+        logger.info(f"User {user_id_str} bypassed rate limit for /start menu action {action}")
+        users['last_interaction'][user_id_str] = current_time
+        save_users()
+        return True
     
     # Bypass for engagers on tasks/balance
     if action in ['tasks', 'balance'] and user_id_str in users['engagers'] and users['engagers'][user_id_str].get('joined'):
@@ -94,7 +101,6 @@ def check_rate_limit(user_id, is_signup_action=False, action=None):
     users['last_interaction'][user_id_str] = current_time
     save_users()
     return True
-
 
 # Initialize the Application object
 logger.info("Building Application object...")
@@ -142,7 +148,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
     reply_target = update.message or update.callback_query.message
-    if not check_rate_limit(user_id, is_signup_action=True):
+    if not check_rate_limit(user_id, is_signup_action=True, action='help'):  # Pass action for bypass
         await reply_target.reply_text("Hang on a sec and try again!")
         return
     keyboard = [
@@ -157,7 +163,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def client(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
     reply_target = update.message or update.callback_query.message
-    if not check_rate_limit(user_id, is_signup_action=True):
+    if not check_rate_limit(user_id, is_signup_action=True, action='client'):  # Pass action for bypass
         await reply_target.reply_text("Hang on a sec and try again!")
         return
     await reply_target.reply_text(
@@ -169,7 +175,7 @@ async def client(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
     reply_target = update.message or update.callback_query.message
-    if not check_rate_limit(user_id, is_signup_action=True):
+    if not check_rate_limit(user_id, is_signup_action=True, action='engager'):  # Pass action for bypass
         await reply_target.reply_text("Hang on a sec and try again!")
         return
     keyboard = [[InlineKeyboardButton("Join Now", callback_data='join')]]
@@ -369,8 +375,9 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     user_id_str = str(user_id)
     data = query.data
+    # Pass the action explicitly for rate limit checking
+    action = data if data in ['client', 'engager', 'help', 'tasks', 'balance'] else None
     is_signup_action = data in ['client', 'engager', 'join', 'help', 'start']
-    action = data if data in ['tasks', 'balance'] else None
     if not check_rate_limit(user_id, is_signup_action=is_signup_action, action=action):
         await query.message.reply_text("Hang on a sec and try again!")
         return
