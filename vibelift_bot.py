@@ -3,6 +3,7 @@ import json
 import time
 import logging
 import asyncio
+import random
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
@@ -37,7 +38,7 @@ ADMIN_GROUP_ID = '-4762253610'
 # Initialize users dictionary
 users = {
     'clients': {}, 'engagers': {}, 'pending_tasks': {}, 'last_interaction': {},
-    'active_orders': {}, 'pending_payouts': {}, 'pending_payments': {}
+    'active_orders': {}, 'pending_payouts': {}, 'pending_payments': {}, 'pending_admin_actions': {}
 }
 try:
     with open('users.json', 'r') as f:
@@ -47,6 +48,8 @@ try:
             users['last_interaction'] = {}
         if 'pending_payments' not in users:
             users['pending_payments'] = {}
+        if 'pending_admin_actions' not in users:
+            users['pending_admin_actions'] = {}
 except FileNotFoundError:
     logger.info("users.json not found, starting with empty users dictionary")
 
@@ -54,6 +57,7 @@ def save_users():
     try:
         with open('users.json', 'w') as f:
             json.dump(users, f)
+        logger.info("users.json saved successfully")
     except Exception as e:
         logger.error(f"Error saving users.json: {e}")
 
@@ -75,6 +79,21 @@ def check_rate_limit(user_id, is_signup_action=False):
 logger.info("Building Application object...")
 application = Application.builder().token(TOKEN).build()
 logger.info("Application object built successfully")
+
+# Function to generate and send admin verification code
+async def generate_admin_code(user_id, action, action_data=None):
+    code = str(random.randint(100000, 999999))  # Generate a 6-digit code
+    action_id = f"{user_id}_{int(time.time())}"
+    users['pending_admin_actions'][action_id] = {
+        'user_id': user_id,
+        'action': action,
+        'action_data': action_data,
+        'code': code,
+        'expiration': time.time() + 300  # Code expires in 5 minutes
+    }
+    await application.bot.send_message(chat_id=ADMIN_USER_ID, text=f"Admin verification code for {action}: {code}\nThis code will expire in 5 minutes.")
+    save_users()
+    return action_id
 
 # Define all handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -153,33 +172,41 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if 'tasks_per_order' not in user_data:
         user_data['tasks_per_order'] = {}
+    logger.info(f"Active orders available for tasks: {users['active_orders']}")
     keyboard = []
     for order_id, order in users['active_orders'].items():
-        platform = order['platform']
-        handle = order['handle']
+        platform = order.get('platform', 'unknown')
+        handle = order.get('handle', 'unknown')
+        follows_left = order.get('follows_left', 0)
+        likes_left = order.get('likes_left', 0)
+        comments_left = order.get('comments_left', 0)
+        logger.info(f"Order {order_id}: platform={platform}, handle={handle}, follows_left={follows_left}, likes_left={likes_left}, comments_left={comments_left}")
         payouts = {
             'instagram': {'follow': 20, 'like': 10, 'comment': 30},
             'facebook': {'follow': 30, 'like': 20, 'comment': 30},
             'tiktok': {'follow': 30, 'like': 20, 'comment': 40},
             'twitter': {'follow': 25, 'like': 30, 'comment': 50}
         }
-        payout = payouts[platform]
+        payout = payouts.get(platform, {'follow': 0, 'like': 0, 'comment': 0})
         order_tasks = user_data['tasks_per_order'].get(order_id, 0)
         if order_tasks >= 5:
+            logger.info(f"Order {order_id} skipped: engager {user_id} has completed {order_tasks} tasks")
             continue
-        if order['follows_left'] > 0:
+        if follows_left > 0:
             keyboard.append([InlineKeyboardButton(f"Follow {handle} on {platform} (₦{payout['follow']})", callback_data=f'task_f_{order_id}')])
-        if order['likes_left'] > 0:
+        if likes_left > 0:
             text = f"Like post on {platform} (₦{payout['like']})" if not order.get('use_recent_posts') else f"Like 3 recent posts by {handle} on {platform} (₦{payout['like']} each)"
             keyboard.append([InlineKeyboardButton(text, callback_data=f'task_l_{order_id}')])
-        if order['comments_left'] > 0:
+        if comments_left > 0:
             text = f"Comment on post on {platform} (₦{payout['comment']})" if not order.get('use_recent_posts') else f"Comment on 3 recent posts by {handle} on {platform} (₦{payout['comment']} each)"
             keyboard.append([InlineKeyboardButton(text, callback_data=f'task_c_{order_id}')])
     if not keyboard:
         await update.message.reply_text("No tasks available right now. Check back soon!")
+        logger.info(f"No tasks available for user {user_id}")
         return
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("Pick a task (send screenshot after):\nLikes and comments require 60 seconds on the post!", reply_markup=reply_markup)
+    logger.info(f"Displayed {len(keyboard)} tasks for user {user_id}")
 
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -252,6 +279,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_rate_limit(user_id, is_signup_action=is_signup_action):
         await context.bot.send_message(chat_id=user_id, text="Slow down! Wait 2 seconds before your next action.")
         return
+    await query.answer()  # Acknowledge the callback query
     if data == 'client':
         await client(update, context)
     elif data == 'engager':
@@ -322,50 +350,34 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await balance(update, context)
     elif data == 'withdraw':
         await withdraw(update, context)
-    elif data.startswith('approve_payout_') and str(user_id) == ADMIN_USER_ID:
+    elif data.startswith('approve_payout_'):
+        if str(user_id) != ADMIN_USER_ID:
+            await context.bot.send_message(chat_id=user_id, text="Only the admin can perform this action!")
+            return
         payout_id = data.split('_')[2]
-        if payout_id in users['pending_payouts']:
-            payout = users['pending_payouts'][payout_id]
-            engager_id = payout['engager_id']
-            amount = payout['amount']
-            account = payout['account']
-            users['engagers'][engager_id]['earnings'] -= amount
-            del users['pending_payouts'][payout_id]
-            await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payout of ₦{amount} to {account} for {engager_id} approved. Process payment now!")
-            await context.bot.send_message(chat_id=engager_id, text=f"Your withdrawal of ₦{amount} to {account} approved!")
-            save_users()
-    elif data.startswith('reject_payout_') and str(user_id) == ADMIN_USER_ID:
+        action_id = await generate_admin_code(user_id, 'approve_payout', {'payout_id': payout_id})
+        await context.bot.send_message(chat_id=user_id, text=f"Please enter the 6-digit code sent to your private chat to approve payout {payout_id}.")
+    elif data.startswith('reject_payout_'):
+        if str(user_id) != ADMIN_USER_ID:
+            await context.bot.send_message(chat_id=user_id, text="Only the admin can perform this action!")
+            return
         payout_id = data.split('_')[2]
-        if payout_id in users['pending_payouts']:
-            engager_id = users['pending_payouts'][payout_id]['engager_id']
-            del users['pending_payouts'][payout_id]
-            await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payout request from {engager_id} rejected.")
-            await context.bot.send_message(chat_id=engager_id, text="Your withdrawal was rejected. Contact support!")
-            save_users()
-    elif data.startswith('approve_payment_') and str(user_id) == ADMIN_USER_ID:
+        action_id = await generate_admin_code(user_id, 'reject_payout', {'payout_id': payout_id})
+        await context.bot.send_message(chat_id=user_id, text=f"Please enter the 6-digit code sent to your private chat to reject payout {payout_id}.")
+    elif data.startswith('approve_payment_'):
+        if str(user_id) != ADMIN_USER_ID:
+            await context.bot.send_message(chat_id=user_id, text="Only the admin can perform this action!")
+            return
         payment_id = data.split('_')[2]
-        if payment_id in users['pending_payments']:
-            payment = users['pending_payments'][payment_id]
-            client_id = payment['client_id']
-            order_id = payment['order_id']
-            users['active_orders'][order_id] = payment['order_details']
-            del users['pending_payments'][payment_id]
-            if str(client_id) in users['clients']:
-                users['clients'][str(client_id)]['step'] = 'completed'
-            await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payment for order {order_id} from {client_id} approved. Tasks now active!")
-            await context.bot.send_message(chat_id=client_id, text="Your payment approved! Results in 4-5 hours for small orders.")
-            save_users()
-    elif data.startswith('reject_payment_') and str(user_id) == ADMIN_USER_ID:
+        action_id = await generate_admin_code(user_id, 'approve_payment', {'payment_id': payment_id})
+        await context.bot.send_message(chat_id=user_id, text=f"Please enter the 6-digit code sent to your private chat to approve payment {payment_id}.")
+    elif data.startswith('reject_payment_'):
+        if str(user_id) != ADMIN_USER_ID:
+            await context.bot.send_message(chat_id=user_id, text="Only the admin can perform this action!")
+            return
         payment_id = data.split('_')[2]
-        if payment_id in users['pending_payments']:
-            payment = users['pending_payments'][payment_id]
-            client_id = payment['client_id']
-            del users['pending_payments'][payment_id]
-            if str(client_id) in users['clients']:
-                del users['clients'][str(client_id)]
-            await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payment for order from {client_id} rejected.")
-            await context.bot.send_message(chat_id=client_id, text="Your payment was rejected. Try again with /client.")
-            save_users()
+        action_id = await generate_admin_code(user_id, 'reject_payment', {'payment_id': payment_id})
+        await context.bot.send_message(chat_id=user_id, text=f"Please enter the 6-digit code sent to your private chat to reject payment {payment_id}.")
     elif data == 'cancel':
         if str(user_id) in users['clients']:
             del users['clients'][str(user_id)]
@@ -383,6 +395,73 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=user_id, text="Slow down! Wait 2 seconds before your next action.")
         return
     if str(update.message.chat_id) == ADMIN_GROUP_ID and str(user_id) != ADMIN_USER_ID:
+        return
+
+    # Check for admin code verification
+    pending_action = None
+    action_id_to_remove = None
+    for action_id, action_data in list(users['pending_admin_actions'].items()):
+        if action_data['user_id'] == int(user_id) and time.time() < action_data['expiration']:
+            pending_action = action_data
+            action_id_to_remove = action_id
+            break
+        elif time.time() >= action_data['expiration']:
+            del users['pending_admin_actions'][action_id]
+    if pending_action and text.isdigit() and len(text) == 6:
+        if text == pending_action['code']:
+            action = pending_action['action']
+            action_data = pending_action['action_data']
+            del users['pending_admin_actions'][action_id_to_remove]
+            save_users()
+            if action == 'approve_payout':
+                payout_id = action_data['payout_id']
+                if payout_id in users['pending_payouts']:
+                    payout = users['pending_payouts'][payout_id]
+                    engager_id = payout['engager_id']
+                    amount = payout['amount']
+                    account = payout['account']
+                    users['engagers'][engager_id]['earnings'] -= amount
+                    del users['pending_payouts'][payout_id]
+                    await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payout of ₦{amount} to {account} for {engager_id} approved. Process payment now!")
+                    await context.bot.send_message(chat_id=engager_id, text=f"Your withdrawal of ₦{amount} to {account} approved!")
+                    save_users()
+            elif action == 'reject_payout':
+                payout_id = action_data['payout_id']
+                if payout_id in users['pending_payouts']:
+                    engager_id = users['pending_payouts'][payout_id]['engager_id']
+                    del users['pending_payouts'][payout_id]
+                    await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payout request from {engager_id} rejected.")
+                    await context.bot.send_message(chat_id=engager_id, text="Your withdrawal was rejected. Contact support!")
+                    save_users()
+            elif action == 'approve_payment':
+                payment_id = action_data['payment_id']
+                if payment_id in users['pending_payments']:
+                    payment = users['pending_payments'][payment_id]
+                    client_id = payment['client_id']
+                    order_id = payment['order_id']
+                    order_details = payment['order_details']
+                    logger.info(f"Approving payment {payment_id}: Adding order {order_id} to active_orders with details {order_details}")
+                    users['active_orders'][order_id] = order_details
+                    del users['pending_payments'][payment_id]
+                    if str(client_id) in users['clients']:
+                        users['clients'][str(client_id)]['step'] = 'completed'
+                    await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payment for order {order_id} from {client_id} approved. Tasks now active!")
+                    await context.bot.send_message(chat_id=client_id, text="Your payment approved! Results in 4-5 hours for small orders.")
+                    save_users()
+            elif action == 'reject_payment':
+                payment_id = action_data['payment_id']
+                if payment_id in users['pending_payments']:
+                    payment = users['pending_payments'][payment_id]
+                    client_id = payment['client_id']
+                    del users['pending_payments'][payment_id]
+                    if str(client_id) in users['clients']:
+                        del users['clients'][str(client_id)]
+                    await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payment for order from {client_id} rejected.")
+                    await context.bot.send_message(chat_id=client_id, text="Your payment was rejected. Try again with /client.")
+                    save_users()
+            await context.bot.send_message(chat_id=user_id, text=f"{action.replace('_', ' ').title()} completed successfully!")
+        else:
+            await context.bot.send_message(chat_id=user_id, text="Incorrect code! Please try again.")
         return
 
     # Define package limits and pricing
@@ -716,80 +795,77 @@ async def telegram_webhook():
         logger.error(f"Error processing webhook update: {e}")
         return "Error", 500
 
-        @app.route('/paystack-webhook', methods=['POST', 'GET'])
-        async def paystack_webhook():
-            if request.method == 'POST':
-                try:
-                    event = request.get_json()
-                    logger.info(f"Received Paystack webhook event: {event}")
-                    if event['event'] == 'charge.success':
-                        user_id = event['data']['metadata'].get('user_id')
-                        order_id = event['data']['metadata'].get('order_id')
-                        amount = event['data']['amount'] / 100
-                        if str(user_id) in users['clients'] and users['clients'][str(user_id)]['order_id'] == order_id:
-                            order_details = users['clients'][str(user_id)]['order_details']
-                            order_details['client_id'] = user_id
-                            users['active_orders'][order_id] = order_details
-                            users['clients'][str(user_id)]['step'] = 'completed'
-                            await application.bot.send_message(chat_id=user_id, text=f"Payment of ₦{amount} approved! Your order is active.")
-                            await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Paystack payment of ₦{amount} from {user_id} approved for order {order_id}")
-                            save_users()
-                    return "Webhook received", 200
-                except Exception as e:
-                    logger.error(f"Error processing Paystack webhook: {e}")
-                    return "Error", 500
-            else:  # GET request
-                # Return an HTML page for the callback redirect
-                html_response = """
-                <!DOCTYPE html>
-                <html lang="en">
-                <head>
-                    <meta charset="UTF-8">
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    <title>Payment Successful - VibeLiftBot</title>
-                    <style>
-                        body {
-                            font-family: Arial, sans-serif;
-                            text-align: center;
-                            padding: 50px;
-                            background-color: #f4f4f4;
-                        }
-                        h1 {
-                            color: #28a745;
-                        }
-                        p {
-                            font-size: 18px;
-                            color: #333;
-                        }
-                        a {
-                            display: inline-block;
-                            margin-top: 20px;
-                            padding: 10px 20px;
-                            background-color: #007bff;
-                            color: white;
-                            text-decoration: none;
-                            border-radius: 5px;
-                        }
-                        a:hover {
-                            background-color: #0056b3;
-                        }
-                    </style>
-                </head>
-                <body>
-                    <h1>Payment Successful!</h1>
-                    <p>Thank you for your payment. Your order is now active.</p>
-                    <p>You can return to Telegram to continue using VibeLiftBot.</p>
-                    <a href="https://t.me/VibeLiftBot">Return to Telegram</a>
-                </body>
-                </html>
-                """
-                return html_response, 200
+@app.route('/paystack-webhook', methods=['POST', 'GET'])
+async def paystack_webhook():
+    if request.method == 'POST':
+        try:
+            event = request.get_json()
+            logger.info(f"Received Paystack webhook event: {event}")
+            if event['event'] == 'charge.success':
+                user_id = event['data']['metadata'].get('user_id')
+                order_id = event['data']['metadata'].get('order_id')
+                amount = event['data']['amount'] / 100
+                if str(user_id) in users['clients'] and users['clients'][str(user_id)]['order_id'] == order_id:
+                    order_details = users['clients'][str(user_id)]['order_details']
+                    order_details['client_id'] = user_id
+                    logger.info(f"Paystack payment approved: Adding order {order_id} to active_orders with details {order_details}")
+                    users['active_orders'][order_id] = order_details
+                    users['clients'][str(user_id)]['step'] = 'completed'
+                    await application.bot.send_message(chat_id=user_id, text=f"Payment of ₦{amount} approved! Your order is active.")
+                    await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Paystack payment of ₦{amount} from {user_id} approved for order {order_id}")
+                    save_users()
+            return "Webhook received", 200
+        except Exception as e:
+            logger.error(f"Error processing Paystack webhook: {e}")
+            return "Error", 500
+    else:  # GET request
+        html_response = """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Payment Successful - VibeLiftBot</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    text-align: center;
+                    padding: 50px;
+                    background-color: #f4f4f4;
+                }
+                h1 {
+                    color: #28a745;
+                }
+                p {
+                    font-size: 18px;
+                    color: #333;
+                }
+                a {
+                    display: inline-block;
+                    margin-top: 20px;
+                    padding: 10px 20px;
+                    background-color: #007bff;
+                    color: white;
+                    text-decoration: none;
+                    border-radius: 5px;
+                }
+                a:hover {
+                    background-color: #0056b3;
+                }
+            </style>
+        </head>
+        <body>
+            <h1>Payment Successful!</h1>
+            <p>Thank you for your payment. Your order is now active.</p>
+            <p>You can return to Telegram to continue using VibeLiftBot.</p>
+            <a href="https://t.me/VibeLiftBot">Return to Telegram</a>
+        </body>
+        </html>
+        """
+        return html_response, 200
 
 async def main():
-    # Run the async setup
     await setup_application()
-
-    # Start the Flask app with uvicorn, wrapped with WsgiToAsgi
     port = int(os.getenv("PORT", 5000))
     logger.info(f"Starting Flask server on port {port} with uvicorn...")
     asgi_app = WsgiToAsgi(app)
