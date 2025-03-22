@@ -31,10 +31,11 @@ PAYSTACK_HEADERS = {
     "Content-Type": "application/json"
 }
 
-# Bot token, admin IDs
+# Bot token, admin IDs, and withdrawal limit
 TOKEN = TELEGRAM_TOKEN or '7637213737:AAHz9Kvcxj-UZhDlKyyhc9fqoD51JBSsViA'
 ADMIN_USER_ID = '1518439839'
 ADMIN_GROUP_ID = '-4762253610'
+WITHDRAWAL_LIMIT = 2000  # Trial limit for withdrawals
 
 # Initialize users dictionary
 users = {
@@ -64,14 +65,12 @@ def check_rate_limit(user_id, is_signup_action=False, action=None):
     current_time = time.time()
     last_time = users['last_interaction'].get(user_id_str, 0)
     
-    # Allow immediate access to tasks/balance for joined engagers
     if action in ['tasks', 'balance'] and user_id_str in users['engagers'] and users['engagers'][user_id_str].get('joined'):
         logger.info(f"User {user_id_str} is an engager, bypassing rate limit for {action}")
         users['last_interaction'][user_id_str] = current_time
         save_users()
         return True
     
-    # Apply rate limit for signup actions or non-engagers
     if is_signup_action:
         if current_time - last_time < 2:
             logger.info(f"User {user_id_str} rate limited for signup action")
@@ -80,7 +79,6 @@ def check_rate_limit(user_id, is_signup_action=False, action=None):
         save_users()
         return True
     
-    # Default 2-second cooldown for other actions
     if current_time - last_time < 2:
         logger.info(f"User {user_id_str} rate limited for action {action}")
         return False
@@ -259,7 +257,13 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if earnings < 1000:
         await update.message.reply_text(f"Minimum withdrawal requires ₦1,000 earned (excluding ₦{bonus} bonus). Current earned: ₦{earnings}. Keep earning!")
         return
-    await update.message.reply_text("Reply with your OPay account number to request withdrawal (e.g., 8101234567).")
+    await update.message.reply_text(
+        f"Reply with your OPay account number to request withdrawal (e.g., 8101234567).\n"
+        f"Note: A trial withdrawal limit of ₦{WITHDRAWAL_LIMIT} is in place. "
+        f"Your balance: ₦{total_balance}.{' You can proceed.' if total_balance <= WITHDRAWAL_LIMIT else ' Your balance exceeds the limit. Please wait until the limit is lifted.'}"
+    )
+    if total_balance > WITHDRAWAL_LIMIT:
+        return
     users['engagers'][user_id_str]['awaiting_payout'] = True
     save_users()
 
@@ -298,35 +302,24 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error initiating payment: {e}")
         await update.message.reply_text("An error occurred. Try again later.")
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
-    if user_id != ADMIN_USER_ID:
-        await update.message.reply_text("Admin only!")
-        return
-    num_clients = len(users['clients'])
-    num_engagers = len(users['engagers'])
-    pending_tasks = sum(order.get('follows_left', 0) + order.get('likes_left', 0) + order.get('comments_left', 0) for order in users['active_orders'].values())
-    completed_tasks = sum(sum(claim.get('amount', 0) for claim in users['engagers'][engager].get('claims', []) if claim['status'] == 'approved') for engager in users['engagers']) // 20
-    stats_text = (
-        f"Admin Stats:\n"
-        f"- Total Clients: {num_clients}\n"
-        f"- Total Engagers: {num_engagers}\n"
-        f"- Pending Tasks: {pending_tasks}\n"
-        f"- Completed Tasks (approx.): {completed_tasks}"
-    )
-    await update.message.reply_text(stats_text)
-
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
     if user_id != ADMIN_USER_ID:
         await update.message.reply_text("Admin only!")
         return
     keyboard = [
-        [InlineKeyboardButton("View Stats", callback_data='admin_stats')],
-        [InlineKeyboardButton("Audit Task", callback_data='admin_audit')]
+        [InlineKeyboardButton("📊 View Stats", callback_data='admin_stats')],
+        [InlineKeyboardButton("🔍 Audit Task", callback_data='admin_audit')],
+        [InlineKeyboardButton("💸 View Withdrawals", callback_data='admin_view_withdrawals')],
+        [InlineKeyboardButton("💳 View Pending Payments", callback_data='admin_view_payments')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Admin Panel:\nChoose an action:", reply_markup=reply_markup)
+    await update.message.reply_text(
+        f"Admin Panel:\n"
+        f"Note: Withdrawal limit set to ₦{WITHDRAWAL_LIMIT} for trial. Adjust in code to change.\n"
+        f"Choose an action:", 
+        reply_markup=reply_markup
+    )
 
 async def audit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
@@ -431,7 +424,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"Order {order_id} has no comments left")
             await query.message.reply_text("Task no longer available!")
             return
-        # Check if user has already completed this specific task type for this order
         user_data = users['engagers'].get(user_id_str, {})
         claims = user_data.get('claims', [])
         for claim in claims:
@@ -477,42 +469,123 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"- Pending Tasks: {pending_tasks}\n"
             f"- Completed Tasks (approx.): {completed_tasks}"
         )
-        await query.message.reply_text(stats_text)
+        keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text(stats_text, reply_markup=reply_markup)
     elif data == 'admin_audit':
         if user_id_str != ADMIN_USER_ID:
             await query.message.reply_text("Admin only!")
             return
         users['pending_admin_actions'][f"audit_{user_id_str}"] = {'user_id': int(user_id_str), 'action': 'awaiting_audit_input', 'expiration': time.time() + 300}
         save_users()
-        await query.message.reply_text("Please reply with: <engager_id> <order_id> [reason]\nExample: 1518439839 1518439839_1742633918 Invalid proof")
+        keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text("Please reply with: <engager_id> <order_id> [reason]\nExample: 1518439839 1518439839_1742633918 Invalid proof", reply_markup=reply_markup)
+    elif data == 'admin_view_withdrawals':
+        if user_id_str != ADMIN_USER_ID:
+            await query.message.reply_text("Admin only!")
+            return
+        if not users['pending_payouts']:
+            keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.message.reply_text("No pending withdrawal requests.", reply_markup=reply_markup)
+            return
+        message = "Pending Withdrawal Requests:\n"
+        keyboard = []
+        for payout_id, payout in users['pending_payouts'].items():
+            engager_id = payout['engager_id']
+            amount = payout['amount']
+            account = payout['account']
+            timestamp = payout.get('timestamp', time.time())
+            formatted_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp))
+            message += f"\n- Engager: {engager_id}, Amount: ₦{amount}, Account: {account}, Requested: {formatted_time}\n"
+            keyboard.append([
+                InlineKeyboardButton(f"Approve (₦{amount})", callback_data=f'approve_payout_{payout_id}'),
+                InlineKeyboardButton("Reject", callback_data=f'reject_payout_{payout_id}')
+            ])
+        keyboard.append([InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text(message, reply_markup=reply_markup)
+    elif data == 'admin_view_payments':
+        if user_id_str != ADMIN_USER_ID:
+            await query.message.reply_text("Admin only!")
+            return
+        if not users['pending_payments']:
+            keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.message.reply_text("No pending payments.", reply_markup=reply_markup)
+            return
+        for payment_id, payment in users['pending_payments'].items():
+            client_id = payment['client_id']
+            order_id = payment['order_id']
+            amount = users['clients'][str(client_id)]['amount']
+            keyboard = [
+                [
+                    InlineKeyboardButton("Approve", callback_data=f'approve_payment_{payment_id}'),
+                    InlineKeyboardButton("Reject", callback_data=f'reject_payment_{payment_id}')
+                ],
+                [InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await context.bot.send_photo(
+                chat_id=user_id,
+                photo=payment['photo_id'],
+                caption=f"Payment proof from {client_id} for order: {order_id}. Amount: ₦{amount}",
+                reply_markup=reply_markup
+            )
+    elif data == 'back_to_admin':
+        if user_id_str != ADMIN_USER_ID:
+            await query.message.reply_text("Admin only!")
+            return
+        keyboard = [
+            [InlineKeyboardButton("📊 View Stats", callback_data='admin_stats')],
+            [InlineKeyboardButton("🔍 Audit Task", callback_data='admin_audit')],
+            [InlineKeyboardButton("💸 View Withdrawals", callback_data='admin_view_withdrawals')],
+            [InlineKeyboardButton("💳 View Pending Payments", callback_data='admin_view_payments')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text(
+            f"Admin Panel:\n"
+            f"Note: Withdrawal limit set to ₦{WITHDRAWAL_LIMIT} for trial. Adjust in code to change.\n"
+            f"Choose an action:", 
+            reply_markup=reply_markup
+        )
     elif data.startswith('approve_payout_'):
         if user_id_str != ADMIN_USER_ID:
             await query.message.reply_text("Only the admin can perform this action!")
             return
         payout_id = data.split('_')[2]
         action_id = await generate_admin_code(user_id, 'approve_payout', {'payout_id': payout_id})
-        await query.message.reply_text(f"Please enter the 6-digit code sent to your private chat to approve payout {payout_id}.")
+        keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text(f"Please enter the 6-digit code sent to your private chat to approve payout {payout_id}.", reply_markup=reply_markup)
     elif data.startswith('reject_payout_'):
         if user_id_str != ADMIN_USER_ID:
             await query.message.reply_text("Only the admin can perform this action!")
             return
         payout_id = data.split('_')[2]
         action_id = await generate_admin_code(user_id, 'reject_payout', {'payout_id': payout_id})
-        await query.message.reply_text(f"Please enter the 6-digit code sent to your private chat to reject payout {payout_id}.")
+        keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text(f"Please enter the 6-digit code sent to your private chat to reject payout {payout_id}.", reply_markup=reply_markup)
     elif data.startswith('approve_payment_'):
         if user_id_str != ADMIN_USER_ID:
             await query.message.reply_text("Only the admin can perform this action!")
             return
         payment_id = data.split('_')[2]
         action_id = await generate_admin_code(user_id, 'approve_payment', {'payment_id': payment_id})
-        await query.message.reply_text(f"Please enter the 6-digit code sent to your private chat to approve payment {payment_id}.")
+        keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text(f"Please enter the 6-digit code sent to your private chat to approve payment {payment_id}.", reply_markup=reply_markup)
     elif data.startswith('reject_payment_'):
         if user_id_str != ADMIN_USER_ID:
             await query.message.reply_text("Only the admin can perform this action!")
             return
         payment_id = data.split('_')[2]
         action_id = await generate_admin_code(user_id, 'reject_payment', {'payment_id': payment_id})
-        await query.message.reply_text(f"Please enter the 6-digit code sent to your private chat to reject payment {payment_id}.")
+        keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text(f"Please enter the 6-digit code sent to your private chat to reject payment {payment_id}.", reply_markup=reply_markup)
     elif data == 'cancel':
         if user_id_str in users['clients']:
             del users['clients'][user_id_str]
@@ -919,8 +992,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if earnings < 1000:
             await update.message.reply_text(f"Minimum withdrawal requires ₦1,000 earned (excluding ₦{bonus} bonus). Current earned: ₦{earnings}. Keep earning!")
             return
+        if total_balance > WITHDRAWAL_LIMIT:
+            await update.message.reply_text(f"Withdrawal limit for trial is ₦{WITHDRAWAL_LIMIT}. Your balance (₦{total_balance}) exceeds this. Please wait until the limit is lifted.")
+            return
         payout_id = f"{user_id}_{int(time.time())}"
-        users['pending_payouts'][payout_id] = {'engager_id': user_id, 'amount': total_balance, 'account': account}
+        users['pending_payouts'][payout_id] = {
+            'engager_id': user_id,
+            'amount': total_balance,
+            'account': account,
+            'timestamp': time.time()
+        }
         users['engagers'][user_id]['awaiting_payout'] = False
         await update.message.reply_text(f"Withdrawal request for ₦{total_balance} to {account} submitted!")
         keyboard = [[InlineKeyboardButton("Approve", callback_data=f'approve_payout_{payout_id}'), InlineKeyboardButton("Reject", callback_data=f'reject_payout_{payout_id}')]]
@@ -942,7 +1023,6 @@ async def setup_application():
     application.add_handler(CommandHandler("balance", balance))
     application.add_handler(CommandHandler("withdraw", withdraw))
     application.add_handler(CommandHandler("pay", pay))
-    application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("admin", admin))
     application.add_handler(CommandHandler("audit", audit))
     application.add_handler(CallbackQueryHandler(button))
