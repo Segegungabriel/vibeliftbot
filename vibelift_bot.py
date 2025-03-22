@@ -476,7 +476,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("Order canceled. Start over with /client!")
             save_users()
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
     text = update.message.text.lower() if update.message.text else ""
     is_signup_action = (
@@ -571,7 +571,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'comments': {
             'instagram': {'5': 5, '10': 10, '50': 50},
             'facebook': {'5': 5, '10': 10, '50': 50},
-            'tiktok': {'5': 5, '10': 10, '50': 50},
+            'tiktok': {'5': 5, "10": 10, '50': 50},
             'twitter': {'5': 5, '10': 10, '50': 50}
         },
         'bundle': {
@@ -780,13 +780,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Please include a screenshot of your payment proof!")
     elif user_id in users['engagers'] and users['engagers'][user_id].get('joined') and update.message.photo:
         user_data = users['engagers'][user_id]
-        if 'tasks_per_order' not in user_data or not user_data['tasks_per_order']:
+        if 'task_timers' not in user_data or not user_data['task_timers']:
             await update.message.reply_text("Claim a task first with /tasks!")
             return
+        task_claimed = False
         for order_id in list(users['active_orders'].keys()):
             for task_type in ['f', 'l', 'c']:
                 timer_key = f"{order_id}_{task_type}"
                 if timer_key in user_data['task_timers']:
+                    task_claimed = True
                     claim_time = user_data['task_timers'][timer_key]
                     time_spent = time.time() - claim_time
                     if task_type in ['l', 'c'] and time_spent < 60:
@@ -805,6 +807,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     earnings = payouts[platform][task_type]
                     user_data['earnings'] = user_data.get('earnings', 0) + earnings
                     user_data['daily_tasks']['count'] += 1
+                    if 'tasks_per_order' not in user_data:
+                        user_data['tasks_per_order'] = {}
                     user_data['tasks_per_order'][order_id] = user_data['tasks_per_order'].get(order_id, 0) + 1
                     user_data['claims'].append({
                         'order_id': order_id,
@@ -831,7 +835,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                                 caption=f"Auto-approved task:\nEngager: {user_id}\nTask: {task_type}\nOrder: {order_id}\nTime: {int(time_spent)}s")
                     save_users()
                     return
-        await update.message.reply_text("Claim a task first with /tasks!")
+        if not task_claimed:
+            await update.message.reply_text("Claim a task first with /tasks!")
     elif user_id in users['engagers'] and users['engagers'][user_id].get('awaiting_payout', False):
         account = text.strip()
         if not account.isdigit() or len(account) != 10:
