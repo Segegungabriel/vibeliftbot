@@ -316,6 +316,18 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(stats_text)
 
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("Admin only!")
+        return
+    keyboard = [
+        [InlineKeyboardButton("View Stats", callback_data='admin_stats')],
+        [InlineKeyboardButton("Audit Task", callback_data='admin_audit')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Admin Panel:\nChoose an action:", reply_markup=reply_markup)
+
 async def audit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
     if user_id != ADMIN_USER_ID:
@@ -361,7 +373,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == 'client_guide':
         keyboard = [[InlineKeyboardButton("Back to Help", callback_data='help')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.reply_text("Client Guide:\n- Use /client to start your order.\n- Pay to: 8101062411 OPay Oluwasegun Okusanya or use /pay.", reply_markup=reply_markup)
+        await query.message.reply_text("Client Guide:\n- Use /client to start your order.\n- Pay via Paystack using /pay.", reply_markup=reply_markup)
     elif data == 'engager_guide':
         keyboard = [[InlineKeyboardButton("Back to Help", callback_data='help')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -419,9 +431,17 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"Order {order_id} has no comments left")
             await query.message.reply_text("Task no longer available!")
             return
+        # Check if user has already completed this specific task type for this order
+        user_data = users['engagers'].get(user_id_str, {})
+        claims = user_data.get('claims', [])
+        for claim in claims:
+            if claim['order_id'] == order_id and claim['task_type'] == task_type and claim['status'] == 'approved':
+                task_name = {'f': 'Follow', 'l': 'Like', 'c': 'Comment'}.get(task_type, 'Task')
+                await query.message.reply_text(f"You’ve already completed the {task_name} task for this order!")
+                return
         timer_key = f"{order_id}_{task_type}"
-        if 'tasks_per_order' not in users['engagers'][user_id_str]:
-            users['engagers'][user_id_str]['tasks_per_order'] = {}
+        if 'tasks_per_order' not in user_data:
+            user_data['tasks_per_order'] = {}
         users['engagers'][user_id_str]['task_timers'][timer_key] = time.time()
         if task_type == 'f':
             await query.message.reply_text(f"Follow {order['handle']} on {order['platform']} and submit proof!")
@@ -442,6 +462,29 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await balance(update, context)
     elif data == 'withdraw':
         await withdraw(update, context)
+    elif data == 'admin_stats':
+        if user_id_str != ADMIN_USER_ID:
+            await query.message.reply_text("Admin only!")
+            return
+        num_clients = len(users['clients'])
+        num_engagers = len(users['engagers'])
+        pending_tasks = sum(order.get('follows_left', 0) + order.get('likes_left', 0) + order.get('comments_left', 0) for order in users['active_orders'].values())
+        completed_tasks = sum(sum(claim.get('amount', 0) for claim in users['engagers'][engager].get('claims', []) if claim['status'] == 'approved') for engager in users['engagers']) // 20
+        stats_text = (
+            f"Admin Stats:\n"
+            f"- Total Clients: {num_clients}\n"
+            f"- Total Engagers: {num_engagers}\n"
+            f"- Pending Tasks: {pending_tasks}\n"
+            f"- Completed Tasks (approx.): {completed_tasks}"
+        )
+        await query.message.reply_text(stats_text)
+    elif data == 'admin_audit':
+        if user_id_str != ADMIN_USER_ID:
+            await query.message.reply_text("Admin only!")
+            return
+        users['pending_admin_actions'][f"audit_{user_id_str}"] = {'user_id': int(user_id_str), 'action': 'awaiting_audit_input', 'expiration': time.time() + 300}
+        save_users()
+        await query.message.reply_text("Please reply with: <engager_id> <order_id> [reason]\nExample: 1518439839 1518439839_1742633918 Invalid proof")
     elif data.startswith('approve_payout_'):
         if user_id_str != ADMIN_USER_ID:
             await query.message.reply_text("Only the admin can perform this action!")
@@ -498,6 +541,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             break
         elif time.time() >= action_data['expiration']:
             del users['pending_admin_actions'][action_id]
+    if pending_action and action_id_to_remove.startswith('audit_'):
+        if pending_action['action'] == 'awaiting_audit_input':
+            parts = text.split(maxsplit=2)
+            if len(parts) < 2:
+                await update.message.reply_text("Please provide: <engager_id> <order_id> [reason]\nExample: 1518439839 1518439839_1742633918 Invalid proof")
+                return
+            engager_id, order_id = parts[0], parts[1]
+            reason = parts[2] if len(parts) > 2 else "No reason provided"
+            if engager_id not in users['engagers'] or 'claims' not in users['engagers'][engager_id]:
+                await update.message.reply_text("No claims found for this user.")
+                del users['pending_admin_actions'][action_id_to_remove]
+                save_users()
+                return
+            for claim in users['engagers'][engager_id]['claims']:
+                if claim['order_id'] == order_id and claim['status'] == 'approved':
+                    claim['status'] = 'rejected'
+                    claim['rejection_reason'] = reason
+                    users['engagers'][engager_id]['earnings'] -= claim['amount']
+                    await context.bot.send_message(chat_id=engager_id, 
+                                                   text=f"Your task {order_id} was rejected after audit. Reason: {reason}. ₦{claim['amount']} removed from your balance.")
+                    await update.message.reply_text(f"Task {order_id} for {engager_id} rejected. Balance updated.")
+                    del users['pending_admin_actions'][action_id_to_remove]
+                    save_users()
+                    return
+            await update.message.reply_text("Claim not found or already processed.")
+            del users['pending_admin_actions'][action_id_to_remove]
+            save_users()
+            return
     if pending_action and text.isdigit() and len(text) == 6:
         if text == pending_action['code']:
             action = pending_action['action']
@@ -571,7 +642,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'comments': {
             'instagram': {'5': 5, '10': 10, '50': 50},
             'facebook': {'5': 5, '10': 10, '50': 50},
-            'tiktok': {'5': 5, "10": 10, '50': 50},
+            'tiktok': {'5': 5, '10': 10, '50': 50},
             'twitter': {'5': 5, '10': 10, '50': 50}
         },
         'bundle': {
@@ -668,7 +739,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             users['clients'][user_id]['order_details'] = order_details
             keyboard = [[InlineKeyboardButton("Cancel Order", callback_data='cancel')]]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text(f"Order received! Pay ₦{users['clients'][user_id]['amount']} to: 8101062411 OPay or use /pay.", reply_markup=reply_markup)
+            await update.message.reply_text(f"Order received! Pay via Paystack using /pay.", reply_markup=reply_markup)
             await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"New order from {user_id}: {handle} {platform} {package} (followers). Awaiting payment.")
         save_users()
     elif user_id in users['clients'] and users['clients'][user_id]['step'] == 'awaiting_urls':
@@ -757,7 +828,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users['clients'][user_id]['order_details'] = order_details
         keyboard = [[InlineKeyboardButton("Cancel Order", callback_data='cancel')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(f"Order received! Pay ₦{amount} to: 8101062411 OPay or use /pay.", reply_markup=reply_markup)
+        await update.message.reply_text(f"Order received! Pay via Paystack using /pay.", reply_markup=reply_markup)
         await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"New order from {user_id}: {handle} {platform} {package} ({order_type}). Awaiting payment.")
         save_users()
     elif user_id in users['clients'] and users['clients'][user_id]['step'] == 'awaiting_payment' and 'proof' in text:
@@ -872,6 +943,7 @@ async def setup_application():
     application.add_handler(CommandHandler("withdraw", withdraw))
     application.add_handler(CommandHandler("pay", pay))
     application.add_handler(CommandHandler("stats", stats))
+    application.add_handler(CommandHandler("admin", admin))
     application.add_handler(CommandHandler("audit", audit))
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
