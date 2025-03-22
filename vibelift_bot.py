@@ -35,34 +35,38 @@ TOKEN = TELEGRAM_TOKEN or '7637213737:AAHz9Kvcxj-UZhDlKyyhc9fqoD51JBSsViA'
 ADMIN_USER_ID = '1518439839'
 ADMIN_GROUP_ID = '-4762253610'
 
+# Persistent storage path
+STORAGE_PATH = os.getenv("STORAGE_PATH", "/data/users.json")
+os.makedirs(os.path.dirname(STORAGE_PATH), exist_ok=True)
+
 # Initialize users dictionary
 users = {
     'clients': {}, 'engagers': {}, 'pending_tasks': {}, 'last_interaction': {},
     'active_orders': {}, 'pending_payouts': {}, 'pending_payments': {}, 'pending_admin_actions': {}
 }
 try:
-    with open('users.json', 'r') as f:
+    with open(STORAGE_PATH, 'r') as f:
         loaded_users = json.load(f)
         users.update(loaded_users)
         for key in ['last_interaction', 'pending_payments', 'pending_admin_actions']:
             if key not in users:
                 users[key] = {}
 except FileNotFoundError:
-    logger.info("users.json not found, starting with empty users dictionary")
+    logger.info(f"{STORAGE_PATH} not found, starting with empty users dictionary")
 
 def save_users():
     try:
-        with open('users.json', 'w') as f:
+        with open(STORAGE_PATH, 'w') as f:
             json.dump(users, f)
-        logger.info("users.json saved successfully")
+        logger.info(f"{STORAGE_PATH} saved successfully")
     except Exception as e:
-        logger.error(f"Error saving users.json: {e}")
+        logger.error(f"Error saving {STORAGE_PATH}: {e}")
 
-def check_rate_limit(user_id, is_signup_action=False):
+def check_rate_limit(user_id, is_signup_action=False, action=None):
     user_id_str = str(user_id)
     current_time = time.time()
     last_time = users['last_interaction'].get(user_id_str, 0)
-    if is_signup_action:
+    if is_signup_action or (action in ['tasks', 'balance'] and user_id_str in users['engagers'] and users['engagers'][user_id_str].get('joined')):
         users['last_interaction'][user_id_str] = current_time
         save_users()
         return True
@@ -79,14 +83,14 @@ logger.info("Application object built successfully")
 
 # Function to generate and send admin verification code
 async def generate_admin_code(user_id, action, action_data=None):
-    code = str(random.randint(100000, 999999))  # 6-digit code
+    code = str(random.randint(100000, 999999))
     action_id = f"{user_id}_{int(time.time())}"
     users['pending_admin_actions'][action_id] = {
         'user_id': user_id,
         'action': action,
         'action_data': action_data,
         'code': code,
-        'expiration': time.time() + 300  # 5-minute expiration
+        'expiration': time.time() + 300
     }
     await application.bot.send_message(chat_id=ADMIN_USER_ID, text=f"Admin verification code for {action}: {code}\nThis code will expire in 5 minutes.")
     save_users()
@@ -156,7 +160,7 @@ async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
     reply_target = update.message or update.callback_query.message
-    if not check_rate_limit(user_id, is_signup_action=False):
+    if not check_rate_limit(user_id, is_signup_action=False, action='tasks'):
         await reply_target.reply_text("Slow down! Wait 2 seconds before your next action.")
         return
     user_id_str = str(user_id)
@@ -214,7 +218,7 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
     reply_target = update.message or update.callback_query.message
-    if not check_rate_limit(user_id, is_signup_action=False):
+    if not check_rate_limit(user_id, is_signup_action=False, action='balance'):
         await reply_target.reply_text("Slow down! Wait 2 seconds before your next action.")
         return
     user_id_str = str(user_id)
@@ -290,7 +294,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     num_clients = len(users['clients'])
     num_engagers = len(users['engagers'])
     pending_tasks = sum(order.get('follows_left', 0) + order.get('likes_left', 0) + order.get('comments_left', 0) for order in users['active_orders'].values())
-    completed_tasks = sum(sum(claim.get('amount', 0) for claim in users['engagers'][engager].get('claims', []) if claim['status'] == 'approved') for engager in users['engagers']) // 20  # Rough estimate
+    completed_tasks = sum(sum(claim.get('amount', 0) for claim in users['engagers'][engager].get('claims', []) if claim['status'] == 'approved') for engager in users['engagers']) // 20
     stats_text = (
         f"Admin Stats:\n"
         f"- Total Clients: {num_clients}\n"
@@ -331,10 +335,11 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id_str = str(user_id)
     data = query.data
     is_signup_action = data in ['client', 'engager', 'join', 'get_followers', 'get_likes', 'get_comments', 'get_bundle', 'help', 'client_guide', 'engager_guide', 'contact_support', 'back_to_help']
-    if not check_rate_limit(user_id, is_signup_action=is_signup_action):
+    action = data if data in ['tasks', 'balance'] else None
+    if not check_rate_limit(user_id, is_signup_action=is_signup_action, action=action):
         await query.message.reply_text("Slow down! Wait 2 seconds before your next action.")
         return
-    await query.answer()  # Acknowledge the callback query
+    await query.answer()
     if data == 'client':
         await client(update, context)
     elif data == 'engager':
@@ -381,8 +386,9 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("You’re in! Enjoy your ₦500 signup bonus. Start earning to withdraw at ₦1,000 earned!", reply_markup=reply_markup)
         save_users()
     elif data.startswith('task_'):
-        task_parts = data.split('_')
-        task_type, order_id = task_parts[1], task_parts[2]
+        task_parts = data.split('_', 2)
+        task_type = task_parts[1]
+        order_id = task_parts[2]
         logger.info(f"Task claim attempt: user={user_id}, order_id={order_id}, active_orders={users['active_orders']}")
         if order_id not in users['active_orders']:
             logger.info(f"Order {order_id} not in active_orders")
@@ -471,7 +477,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.chat_id) == ADMIN_GROUP_ID and user_id != ADMIN_USER_ID:
         return
 
-    # Check for admin code verification
     pending_action = None
     action_id_to_remove = None
     for action_id, action_data in list(users['pending_admin_actions'].items()):
@@ -538,7 +543,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=user_id, text="Incorrect code! Please try again.")
         return
 
-    # Define package limits and pricing
     package_limits = {
         'followers': {
             'instagram': {'10': 10, '50': 50, '100': 100},
@@ -836,7 +840,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payout request:\nEngager: {user_id}\nAmount: ₦{total_balance}\nAccount: {account}", reply_markup=reply_markup)
         save_users()
 
-# Async setup function to initialize the application, register handlers, and set the webhook
 async def setup_application():
     logger.info("Initializing Application...")
     await application.initialize()
@@ -908,7 +911,7 @@ async def paystack_webhook():
         except Exception as e:
             logger.error(f"Error processing Paystack webhook: {e}")
             return "Error", 500
-    else:  # GET request
+    else:
         html_response = """
         <!DOCTYPE html>
         <html lang="en">
