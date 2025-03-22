@@ -23,6 +23,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PAYSTACK_WEBHOOK_URL = os.getenv("PAYSTACK_WEBHOOK_URL", f"{WEBHOOK_URL.rsplit('/', 1)[0]}/paystack-webhook")
+STORAGE_PATH = "users.json"  # Use root directory for free tier
 
 # Paystack API headers
 PAYSTACK_HEADERS = {
@@ -34,10 +35,6 @@ PAYSTACK_HEADERS = {
 TOKEN = TELEGRAM_TOKEN or '7637213737:AAHz9Kvcxj-UZhDlKyyhc9fqoD51JBSsViA'
 ADMIN_USER_ID = '1518439839'
 ADMIN_GROUP_ID = '-4762253610'
-
-# Persistent storage path
-STORAGE_PATH = os.getenv("STORAGE_PATH", "/data/users.json")
-os.makedirs(os.path.dirname(STORAGE_PATH), exist_ok=True)
 
 # Initialize users dictionary
 users = {
@@ -66,11 +63,26 @@ def check_rate_limit(user_id, is_signup_action=False, action=None):
     user_id_str = str(user_id)
     current_time = time.time()
     last_time = users['last_interaction'].get(user_id_str, 0)
-    if is_signup_action or (action in ['tasks', 'balance'] and user_id_str in users['engagers'] and users['engagers'][user_id_str].get('joined')):
+    
+    # Allow immediate access to tasks/balance for joined engagers
+    if action in ['tasks', 'balance'] and user_id_str in users['engagers'] and users['engagers'][user_id_str].get('joined'):
+        logger.info(f"User {user_id_str} is an engager, bypassing rate limit for {action}")
         users['last_interaction'][user_id_str] = current_time
         save_users()
         return True
+    
+    # Apply rate limit for signup actions or non-engagers
+    if is_signup_action:
+        if current_time - last_time < 2:
+            logger.info(f"User {user_id_str} rate limited for signup action")
+            return False
+        users['last_interaction'][user_id_str] = current_time
+        save_users()
+        return True
+    
+    # Default 2-second cooldown for other actions
     if current_time - last_time < 2:
+        logger.info(f"User {user_id_str} rate limited for action {action}")
         return False
     users['last_interaction'][user_id_str] = current_time
     save_users()
@@ -748,7 +760,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Order received! Pay ₦{amount} to: 8101062411 OPay or use /pay.", reply_markup=reply_markup)
         await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"New order from {user_id}: {handle} {platform} {package} ({order_type}). Awaiting payment.")
         save_users()
-    elif user_id in users['clients'] and users['clients'][user_id]['step'] == 'awaiting_payment' and 'proof' in text:
+    elif user_id in users['clients'] and users['clients'][user_id]['step'] == 'awaiting_payment' and 'proof' of text:
         if update.message.photo:
             payment_id = f"{user_id}_{int(time.time())}"
             users['pending_payments'][payment_id] = {
