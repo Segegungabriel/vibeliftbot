@@ -243,13 +243,20 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if 'tasks_per_order' not in user_data:
         user_data['tasks_per_order'] = {}
     logger.info(f"Active orders available for tasks: {users['active_orders']}")
+    
+    # Sort tasks: Priority tasks first, then others
+    priority_orders = {k: v for k, v in users['active_orders'].items() if v.get('priority', False)}
+    normal_orders = {k: v for k, v in users['active_orders'].items() if not v.get('priority', False)}
+    sorted_orders = {**priority_orders, **normal_orders}
+    
     keyboard = []
-    for order_id, order in users['active_orders'].items():
+    for order_id, order in sorted_orders.items():
         platform = order.get('platform', 'unknown')
         handle = order.get('handle', 'unknown')
         follows_left = order.get('follows_left', 0)
         likes_left = order.get('likes_left', 0)
         comments_left = order.get('comments_left', 0)
+        priority = order.get('priority', False)
         logger.info(f"Order {order_id}: platform={platform}, handle={handle}, follows_left={follows_left}, likes_left={likes_left}, comments_left={comments_left}")
         payouts = {
             'instagram': {'follow': 20, 'like': 10, 'comment': 30},
@@ -262,13 +269,14 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if order_tasks >= 5:
             logger.info(f"Order {order_id} skipped: engager {user_id} has completed {order_tasks} tasks")
             continue
+        prefix = "🚀 " if priority else ""
         if follows_left > 0:
-            keyboard.append([InlineKeyboardButton(f"Follow {handle} on {platform} (₦{payout['follow']})", callback_data=f'task_f_{order_id}')])
+            keyboard.append([InlineKeyboardButton(f"{prefix}Follow {handle} on {platform} (₦{payout['follow']})", callback_data=f'task_f_{order_id}')])
         if likes_left > 0:
-            text = f"Like post on {platform} (₦{payout['like']})" if not order.get('use_recent_posts') else f"Like 3 recent posts by {handle} on {platform} (₦{payout['like']} each)"
+            text = f"{prefix}Like post on {platform} (₦{payout['like']})" if not order.get('use_recent_posts') else f"{prefix}Like 3 recent posts by {handle} on {platform} (₦{payout['like']} each)"
             keyboard.append([InlineKeyboardButton(text, callback_data=f'task_l_{order_id}')])
         if comments_left > 0:
-            text = f"Comment on post on {platform} (₦{payout['comment']})" if not order.get('use_recent_posts') else f"Comment on 3 recent posts by {handle} on {platform} (₦{payout['comment']} each)"
+            text = f"{prefix}Comment on post on {platform} (₦{payout['comment']})" if not order.get('use_recent_posts') else f"{prefix}Comment on 3 recent posts by {handle} on {platform} (₦{payout['comment']} each)"
             keyboard.append([InlineKeyboardButton(text, callback_data=f'task_c_{order_id}')])
     if not keyboard:
         await reply_target.reply_text("No tasks right now. Check back in 5-10 minutes!")
@@ -458,7 +466,10 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔍 Audit Task", callback_data='admin_audit')],
         [InlineKeyboardButton("💸 View Withdrawals", callback_data='admin_view_withdrawals')],
         [InlineKeyboardButton("💳 View Pending Payments", callback_data='admin_view_payments')],
-        [InlineKeyboardButton("📋 Pending Actions", callback_data='admin_pending')]
+        [InlineKeyboardButton("📋 Pending Actions", callback_data='admin_pending')],
+        [InlineKeyboardButton("🗑️ Clear Pending Tasks", callback_data='admin_clear_pending')],  # New option
+        [InlineKeyboardButton("📋 View Active Tasks", callback_data='admin_view_tasks')],  # New option
+        [InlineKeyboardButton("🚀 Set Task Priority", callback_data='admin_set_priority')]  # New option
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
@@ -467,6 +478,107 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Pick an action:", 
         reply_markup=reply_markup
     )
+
+    # handler to clear pending tasks
+async def admin_clear_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.callback_query.from_user.id)
+    if user_id != ADMIN_USER_ID:
+        await update.callback_query.message.reply_text("Admin only!")
+        return
+    await update.callback_query.answer()
+    
+    if not (users['pending_payments'] or users['pending_payouts']):
+        keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.callback_query.message.reply_text("No pending tasks to clear!", reply_markup=reply_markup)
+        return
+
+    message = "Pending Tasks to Clear:\n"
+    keyboard = []
+ # Display pending payments
+    for payment_id, payment in users['pending_payments'].items():
+        client_id = payment['client_id']
+        order_id = payment['order_id']
+        amount = users['clients'][str(client_id)]['amount']
+        message += f"\n- Payment {payment_id}: Client {client_id}, Order {order_id}, Amount: ₦{amount}\n"
+        keyboard.append([
+            InlineKeyboardButton(f"Clear Payment {payment_id}", callback_data=f'clear_payment_{payment_id}')
+        ])
+    
+    # Display pending payouts
+    for payout_id, payout in users['pending_payouts'].items():
+        engager_id = payout['engager_id']
+        amount = payout['amount']
+        account = payout['account']
+        message += f"\n- Payout {payout_id}: Engager {engager_id}, Amount: ₦{amount}, Account: {account}\n"
+        keyboard.append([
+            InlineKeyboardButton(f"Clear Payout {payout_id}", callback_data=f'clear_payout_{payout_id}')
+        ])
+    
+    keyboard.append([InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.message.reply_text(message, reply_markup=reply_markup)
+
+# New handler to view active tasks (tasks left)
+async def admin_view_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.callback_query.from_user.id)
+    if user_id != ADMIN_USER_ID:
+        await update.callback_query.message.reply_text("Admin only!")
+        return
+    await update.callback_query.answer()
+    
+    if not users['active_orders']:
+        keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.callback_query.message.reply_text("No active tasks!", reply_markup=reply_markup)
+        return
+
+    message = "Active Tasks (Tasks Left):\n"
+    for order_id, order in users['active_orders'].items():
+        handle = order.get('handle', 'unknown')
+        platform = order.get('platform', 'unknown')
+        follows_left = order.get('follows_left', 0)
+        likes_left = order.get('likes_left', 0)
+        comments_left = order.get('comments_left', 0)
+        priority = order.get('priority', False)
+        message += f"\n- Order {order_id}: {handle} on {platform} {'(Priority)' if priority else ''}\n"
+        message += f"  Follows Left: {follows_left}\n"
+        message += f"  Likes Left: {likes_left}\n"
+        message += f"  Comments Left: {comments_left}\n"
+
+    keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.message.reply_text(message, reply_markup=reply_markup)
+
+# New handler to set task priority
+async def admin_set_priority(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.callback_query.from_user.id)
+    if user_id != ADMIN_USER_ID:
+        await update.callback_query.message.reply_text("Admin only!")
+        return
+    await update.callback_query.answer()
+    
+    if not users['active_orders']:
+        keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.callback_query.message.reply_text("No active tasks to prioritize!", reply_markup=reply_markup)
+        return
+
+    message = "Select a Task to Set as Priority:\n"
+    keyboard = []
+    for order_id, order in users['active_orders'].items():
+        handle = order.get('handle', 'unknown')
+        platform = order.get('platform', 'unknown')
+        priority = order.get('priority', False)
+        status = "Priority" if priority else "Normal"
+        message += f"\n- Order {order_id}: {handle} on {platform} (Current: {status})\n"
+        keyboard.append([
+            InlineKeyboardButton(f"Set Priority: {order_id}", callback_data=f'set_priority_{order_id}')
+        ])
+    
+    keyboard.append([InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.message.reply_text(message, reply_markup=reply_markup)
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
@@ -540,6 +652,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Hang on a sec and try again!")
         return
     await query.answer()
+    
     if data == 'start':
         await start(update, context)
     elif data == 'client':
@@ -711,6 +824,12 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.reply_text(message, reply_markup=reply_markup)
+    elif data == 'admin_clear_pending':
+        await admin_clear_pending(update, context)
+    elif data == 'admin_view_tasks':
+        await admin_view_tasks(update, context)
+    elif data == 'admin_set_priority':
+        await admin_set_priority(update, context)
     elif data == 'back_to_admin':
         if user_id_str != ADMIN_USER_ID:
             await query.message.reply_text("Admin only!")
@@ -720,7 +839,10 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔍 Audit Task", callback_data='admin_audit')],
             [InlineKeyboardButton("💸 View Withdrawals", callback_data='admin_view_withdrawals')],
             [InlineKeyboardButton("💳 View Pending Payments", callback_data='admin_view_payments')],
-            [InlineKeyboardButton("📋 Pending Actions", callback_data='admin_pending')]
+            [InlineKeyboardButton("📋 Pending Actions", callback_data='admin_pending')],
+            [InlineKeyboardButton("🗑️ Clear Pending Tasks", callback_data='admin_clear_pending')],
+            [InlineKeyboardButton("📋 View Active Tasks", callback_data='admin_view_tasks')],
+            [InlineKeyboardButton("🚀 Set Task Priority", callback_data='admin_set_priority')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.reply_text(
@@ -765,6 +887,49 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.reply_text(f"Enter the 6-digit code sent to your private chat to reject payment {payment_id}.", reply_markup=reply_markup)
+    elif data.startswith('clear_payment_'):
+        if user_id_str != ADMIN_USER_ID:
+            await query.message.reply_text("Only admin can do this!")
+            return
+        payment_id = data.split('_')[2]
+        if payment_id in users['pending_payments']:
+            payment = users['pending_payments'][payment_id]
+            client_id = payment['client_id']
+            if str(client_id) in users['clients']:
+                del users['clients'][str(client_id)]
+            del users['pending_payments'][payment_id]
+            await query.message.reply_text(f"Payment {payment_id} cleared!")
+            await context.bot.send_message(chat_id=client_id, text="Your pending payment was cleared by the admin. Start over with /client.")
+            save_users()
+        else:
+            await query.message.reply_text(f"Payment {payment_id} not found!")
+    elif data.startswith('clear_payout_'):
+        if user_id_str != ADMIN_USER_ID:
+            await query.message.reply_text("Only admin can do this!")
+            return
+        payout_id = data.split('_')[2]
+        if payout_id in users['pending_payouts']:
+            payout = users['pending_payouts'][payout_id]
+            engager_id = payout['engager_id']
+            del users['pending_payouts'][payout_id]
+            await query.message.reply_text(f"Payout {payout_id} cleared!")
+            await context.bot.send_message(chat_id=engager_id, text="Your pending withdrawal was cleared by the admin. Contact support if needed.")
+            save_users()
+        else:
+            await query.message.reply_text(f"Payout {payout_id} not found!")
+    elif data.startswith('set_priority_'):
+        if user_id_str != ADMIN_USER_ID:
+            await query.message.reply_text("Only admin can do this!")
+            return
+        order_id = data.split('_')[2]
+        if order_id in users['active_orders']:
+            current_priority = users['active_orders'][order_id].get('priority', False)
+            users['active_orders'][order_id]['priority'] = not current_priority  # Toggle priority
+            status = "Priority" if not current_priority else "Normal"
+            await query.message.reply_text(f"Order {order_id} set to {status}!")
+            save_users()
+        else:
+            await query.message.reply_text(f"Order {order_id} not found!")
     elif data == 'cancel':
         if user_id_str in users['clients']:
             del users['clients'][user_id_str]
@@ -784,7 +949,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.chat_id) == ADMIN_GROUP_ID and user_id != ADMIN_USER_ID:
         return
 
-    # Debug logging to see the user's input
     logger.info(f"Received message from user {user_id}: '{update.message.text}' (normalized: '{text}')")
 
     pending_action = None
@@ -983,7 +1147,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'like_url': '',
                 'comment_url': '',
                 'order_type': order_type,
-                'use_recent_posts': False
+                'use_recent_posts': False,
+                'priority': False  # Initialize priority as False
             }
             users['clients'][user_id]['step'] = 'awaiting_payment'
             users['clients'][user_id]['order_id'] = order_id
@@ -1003,7 +1168,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         order_details = {}
         if order_type == 'bundle':
             limits = package_limits['bundle'][platform][package]
-            use_recent_posts = (text == 'default')  # Case-insensitive comparison
+            use_recent_posts = (text == 'default')
             logger.info(f"User {user_id} replied with '{text}' for bundle order, use_recent_posts={use_recent_posts}")
             if use_recent_posts:
                 like_url = comment_url = "Recent posts"
@@ -1032,7 +1197,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'like_url': like_url,
                 'comment_url': comment_url,
                 'order_type': order_type,
-                'use_recent_posts': use_recent_posts
+                'use_recent_posts': use_recent_posts,
+                'priority': False  # Initialize priority as False
             }
             amount = limits['price']
             package_display = f"{limits['follows']} followers, {limits['likes']} likes, {limits['comments']} comments"
@@ -1059,7 +1225,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     'like_url': url,
                     'comment_url': '',
                     'order_type': order_type,
-                    'use_recent_posts': False
+                    'use_recent_posts': False,
+                    'priority': False  # Initialize priority as False
                 }
                 amount = pricing['likes'][platform][package]
                 package_display = f"{package} likes"
@@ -1074,7 +1241,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     'like_url': '',
                     'comment_url': url,
                     'order_type': order_type,
-                    'use_recent_posts': False
+                    'use_recent_posts': False,
+                    'priority': False  # Initialize priority as False
                 }
                 amount = pricing['comments'][platform][package]
                 package_display = f"{package} comments"
@@ -1192,7 +1360,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_users()
     else:
         await update.message.reply_text("I’m not sure what you mean. Try /start, /client, or /engager!")
-
+        
 async def setup_application():
     logger.info("Initializing Application...")
     await application.initialize()
@@ -1310,6 +1478,7 @@ async def paystack_webhook():
                 amount = payment_data.get('amount', 0) // 100  # Convert from kobo to naira
                 if str(user_id) in users['clients'] and users['clients'][str(user_id)].get('order_id') == order_id:
                     order_details = users['clients'][str(user_id)]['order_details']
+                    order_details['priority'] = False  # Ensure priority is set
                     users['active_orders'][order_id] = order_details
                     users['clients'][str(user_id)]['step'] = 'completed'
                     await application.bot.send_message(
