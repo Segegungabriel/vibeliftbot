@@ -1286,11 +1286,11 @@ async def telegram_webhook():
         # Add error handler
         application.add_error_handler(error)
         
-        # Get the port from the environment variable (Render provides this)
-        port = int(os.getenv("PORT"))  # No default fallback needed
-        logger.info(f"Binding to port {port} from PORT environment variable...")
+        # Get the port from the environment variable provided by Render
+        port = int(os.getenv("PORT"))
+        logger.info(f"Retrieved PORT value: {port}")
         
-        # Start the Flask app with Uvicorn
+        # Start the Flask app with Uvicorn using the retrieved port
         logger.info("Starting Flask app with Uvicorn...")
         config = uvicorn.Config(
             WsgiToAsgi(app),
