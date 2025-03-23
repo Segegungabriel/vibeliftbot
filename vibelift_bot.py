@@ -8,6 +8,8 @@ import json
 import random
 import string
 import requests
+import hmac
+import hashlib
 from flask import Flask, request
 from pymongo import MongoClient
 from threading import Thread
@@ -41,6 +43,7 @@ if not MONGODB_URI:
 client = MongoClient(MONGODB_URI)
 db = client['vibelift_db']
 users_collection = db['users']
+logger.info("Successfully connected to MongoDB Atlas")  # Add this line
 
 # Flask app
 app = Flask(__name__)
@@ -262,23 +265,24 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Something went wrong. Try again later.")
 
 # Flask routes
-@app.route('/payment-success')
-def payment_success():
-    order_id = request.args.get('order_id', 'unknown')
-    bot_link = os.getenv("BOT_LINK", "https://t.me/VibeLiftBot")
-    enhanced_html = SUCCESS_HTML.replace(
-        "<p>Your payment has been processed successfully. Your order is now active.</p>",
-        f"<p>Your payment for order {order_id} has been processed successfully. Your order is now active.</p>"
-    ).replace(
-        "</head>",
-        f'<meta http-equiv="refresh" content="5;url={bot_link}"></head>'
-    )
-    return enhanced_html.format(bot_link=bot_link)
-
 @app.route('/paystack-webhook', methods=['POST'])
 async def paystack_webhook():
     logger.info("Received Paystack webhook request")
     if request.method == 'POST':
+        # Verify Paystack signature
+        paystack_secret = os.getenv("PAYSTACK_SECRET_KEY")
+        signature = request.headers.get('X-Paystack-Signature')
+        body = request.get_data()
+        computed_signature = hmac.new(
+            paystack_secret.encode('utf-8'),
+            body,
+            hashlib.sha512
+        ).hexdigest()
+        
+        if signature != computed_signature:
+            logger.warning("Invalid Paystack webhook signature")
+            return "Invalid signature", 401
+
         try:
             data = request.get_json()
             logger.info(f"Paystack webhook data: {data}")
@@ -290,7 +294,7 @@ async def paystack_webhook():
                 order_id = metadata.get('order_id')
                 amount = payment_data.get('amount', 0) // 100  # Convert from kobo to naira
                 if str(user_id) in users['clients'] and users['clients'][str(user_id)].get('order_id') == order_id:
-                                        order_details = users['clients'][str(user_id)]['order_details']
+                    order_details = users['clients'][str(user_id)]['order_details']
                     order_details['priority'] = False
                     users['active_orders'][order_id] = order_details
                     users['clients'][str(user_id)]['step'] = 'completed'
@@ -305,7 +309,7 @@ async def paystack_webhook():
                     save_users()
                     logger.info(f"Payment confirmed for user {user_id}, order {order_id}")
                 else:
-                    logger.warning(f"Payment received but no matching order found: user {user_id}, order {order_id}")
+                    logger.warning(f"Webhook received but no matching order found: user {user_id}, order {order_id}")
             return "Webhook received", 200
         except Exception as e:
             logger.error(f"Error in Paystack webhook: {e}")
@@ -1165,7 +1169,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(message)
     else:
         await update.message.reply_text(f"Order {order_id} is complete or no longer active!")
-        
+
 # Main function to run the bot
 def main():
     global application  # Make application accessible globally for webhook
