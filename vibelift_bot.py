@@ -784,6 +784,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(update.message.chat_id) == ADMIN_GROUP_ID and user_id != ADMIN_USER_ID:
         return
 
+    # Debug logging to see the user's input
+    logger.info(f"Received message from user {user_id}: '{update.message.text}' (normalized: '{text}')")
+
     pending_action = None
     action_id_to_remove = None
     for action_id, action_data in list(users['pending_admin_actions'].items()):
@@ -1000,7 +1003,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         order_details = {}
         if order_type == 'bundle':
             limits = package_limits['bundle'][platform][package]
-            use_recent_posts = (text == 'default')
+            use_recent_posts = (text == 'default')  # Case-insensitive comparison
+            logger.info(f"User {user_id} replied with '{text}' for bundle order, use_recent_posts={use_recent_posts}")
             if use_recent_posts:
                 like_url = comment_url = "Recent posts"
             else:
