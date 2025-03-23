@@ -1214,6 +1214,51 @@ async def setup_application():
     await application.bot.set_webhook(url=WEBHOOK_URL)
     logger.info(f"Webhook set successfully to {WEBHOOK_URL}")
 
+# HTML template for the payment success page
+SUCCESS_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Successful - VibeLift</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 50px;
+            background-color: #f4f4f4;
+        }
+        h1 {
+            color: #28a745;
+        }
+        p {
+            font-size: 18px;
+            color: #333;
+        }
+        a {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+        }
+        a:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <h1>Payment Successful!</h1>
+    <p>Your payment has been processed successfully. Your order is now active.</p>
+    <p>Return to the VibeLift Bot to check your order status.</p>
+    <a href="{bot_link}">Back to VibeLift Bot</a>
+</body>
+</html>
+"""
+
 @app.route('/')
 def home():
     return "VibeLift Bot is running! Interact with the bot on Telegram."
@@ -1236,6 +1281,12 @@ async def telegram_webhook():
     except Exception as e:
         logger.error(f"Error processing webhook update: {e}")
         return "Error", 500
+
+@app.route('/payment-success')
+def payment_success():
+    # The bot's Telegram link (you can customize this)
+    bot_link = "https://t.me/VibeLiftBot"  # Replace with your actual bot link
+    return SUCCESS_HTML.format(bot_link=bot_link)
 
 @app.route('/paystack-webhook', methods=['POST'])
 async def paystack_webhook():
