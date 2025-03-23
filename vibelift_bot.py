@@ -148,7 +148,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
     reply_target = update.message or update.callback_query.message
-    if not check_rate_limit(user_id, is_signup_action=True, action='help'):  # Pass action for bypass
+    if not check_rate_limit(user_id, is_signup_action=True, action='help'):
         await reply_target.reply_text("Hang on a sec and try again!")
         return
     keyboard = [
@@ -163,7 +163,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def client(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
     reply_target = update.message or update.callback_query.message
-    if not check_rate_limit(user_id, is_signup_action=True, action='client'):  # Pass action for bypass
+    if not check_rate_limit(user_id, is_signup_action=True, action='client'):
         await reply_target.reply_text("Hang on a sec and try again!")
         return
     await reply_target.reply_text(
@@ -175,7 +175,7 @@ async def client(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
     reply_target = update.message or update.callback_query.message
-    if not check_rate_limit(user_id, is_signup_action=True, action='engager'):  # Pass action for bypass
+    if not check_rate_limit(user_id, is_signup_action=True, action='engager'):
         await reply_target.reply_text("Hang on a sec and try again!")
         return
     keyboard = [[InlineKeyboardButton("Join Now", callback_data='join')]]
@@ -252,13 +252,15 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bonus = users['engagers'][user_id_str].get('signup_bonus', 0)
         earnings = users['engagers'][user_id_str].get('earnings', 0)
         total_balance = bonus + earnings
+        tasks_left = max(0, 1000 - earnings) // 20  # Approx tasks to reach ₦1,000
+        feedback = f"Only {tasks_left} tasks to go!" if earnings < 1000 else "Ready to withdraw!"
         keyboard = [
             [InlineKeyboardButton("Withdraw Earnings", callback_data='withdraw')],
             [InlineKeyboardButton("Back to Start", callback_data='start')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await reply_target.reply_text(
-            f"Your VibeLift balance:\n- Signup Bonus: ₦{bonus}\n- Earned: ₦{earnings}\n- Total: ₦{total_balance}\nWithdraw when earned amount hits ₦1,000!",
+            f"Your VibeLift Balance:\n- Signup Bonus: ₦{bonus}\n- Earned: ₦{earnings}\n- Total: ₦{total_balance}\n{feedback}",
             reply_markup=reply_markup
         )
     else:
@@ -326,6 +328,81 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error initiating payment: {e}")
         await update.message.reply_text("Something went wrong. Try again later.")
 
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    if not check_rate_limit(update.message.from_user.id, is_signup_action=True):
+        await update.message.reply_text("Hang on a sec and try again!")
+        return
+    if user_id not in users['clients']:
+        await update.message.reply_text("Start an order with /client first!")
+        return
+    client_data = users['clients'][user_id]
+    if client_data['step'] != 'completed':
+        await update.message.reply_text("Your order isn’t active yet. Use /pay to complete it!")
+        return
+    order_id = client_data['order_id']
+    if order_id not in users['active_orders']:
+        await update.message.reply_text("Your order is done! Check your account.")
+        return
+    order = users['active_orders'][order_id]
+    package_limits = {
+        'followers': {
+            'instagram': {'10': 10, '50': 50, '100': 100},
+            'facebook': {'10': 10, '50': 50, '100': 100},
+            'tiktok': {'10': 10, '50': 50, '100': 100},
+            'twitter': {'10': 10, '50': 50, '100': 100}
+        },
+        'likes': {
+            'instagram': {'20': 20, '100': 100, '200': 200},
+            'facebook': {'20': 20, '100': 100, '200': 200},
+            'tiktok': {'20': 20, '100': 100, '200': 200},
+            'twitter': {'20': 20, '100': 100, '200': 200}
+        },
+        'comments': {
+            'instagram': {'5': 5, '10': 10, '50': 50},
+            'facebook': {'5': 5, '10': 10, '50': 50},
+            'tiktok': {'5': 5, '10': 10, '50': 50},
+            'twitter': {'5': 5, '10': 10, '50': 50}
+        },
+        'bundle': {
+            'instagram': {
+                'starter': {'follows': 10, 'likes': 20, 'comments': 5},
+                'pro': {'follows': 50, 'likes': 100, 'comments': 10},
+                'elite': {'follows': 100, 'likes': 200, 'comments': 50}
+            },
+            'facebook': {
+                'starter': {'follows': 10, 'likes': 20, 'comments': 5},
+                'pro': {'follows': 50, 'likes': 100, 'comments': 10},
+                'elite': {'follows': 100, 'likes': 200, 'comments': 50}
+            },
+            'tiktok': {
+                'starter': {'follows': 10, 'likes': 20, 'comments': 5},
+                'pro': {'follows': 50, 'likes': 100, 'comments': 10},
+                'elite': {'follows': 100, 'likes': 200, 'comments': 50}
+            },
+            'twitter': {
+                'starter': {'follows': 10, 'likes': 20, 'comments': 5},
+                'pro': {'follows': 50, 'likes': 100, 'comments': 10},
+                'elite': {'follows': 100, 'likes': 200, 'comments': 50}
+            }
+        }
+    }
+    total_follows = package_limits[order['order_type']][order['platform']][client_data['package']] if order['order_type'] != 'bundle' else package_limits['bundle'][order['platform']][client_data['package']]['follows']
+    total_likes = package_limits['likes'][order['platform']][client_data['package']] if order['order_type'] == 'likes' else (package_limits['bundle'][order['platform']][client_data['package']]['likes'] if order['order_type'] == 'bundle' else 0)
+    total_comments = package_limits['comments'][order['platform']][client_data['package']] if order['order_type'] == 'comments' else (package_limits['bundle'][order['platform']][client_data['package']]['comments'] if order['order_type'] == 'bundle' else 0)
+    follows_done = total_follows - order['follows_left']
+    likes_done = total_likes - order['likes_left']
+    comments_done = total_comments - order['comments_left']
+    status_text = f"Order Status for {order['handle']} on {order['platform']}:\n"
+    if total_follows > 0:
+        status_text += f"- Followers: {follows_done}/{total_follows}\n"
+    if total_likes > 0:
+        status_text += f"- Likes: {likes_done}/{total_likes}\n"
+    if total_comments > 0:
+        status_text += f"- Comments: {comments_done}/{total_comments}\n"
+    status_text += "Results in 4-5 hours for small orders."
+    await update.message.reply_text(status_text)
+
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
     if user_id != ADMIN_USER_ID:
@@ -344,6 +421,38 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Pick an action:", 
         reply_markup=reply_markup
     )
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("Admin only!")
+        return
+    num_clients = len(users['clients'])
+    num_engagers = len(users['engagers'])
+    pending_tasks = sum(order.get('follows_left', 0) + order.get('likes_left', 0) + order.get('comments_left', 0) for order in users['active_orders'].values())
+    completed_tasks = sum(sum(claim.get('amount', 0) for claim in users['engagers'][engager].get('claims', []) if claim['status'] == 'approved') for engager in users['engagers']) // 20
+    stats_text = (
+        f"Admin Stats:\n"
+        f"- Total Clients: {num_clients}\n"
+        f"- Total Engagers: {num_engagers}\n"
+        f"- Pending Tasks: {pending_tasks}\n"
+        f"- Completed Tasks (approx.): {completed_tasks}"
+    )
+    await update.message.reply_text(stats_text)
+
+async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("Admin only!")
+        return
+    message = "Pending Actions:\n"
+    if users['pending_payments']:
+        message += f"- Payments: {len(users['pending_payments'])}\n"
+    if users['pending_payouts']:
+        message += f"- Withdrawals: {len(users['pending_payouts'])}\n"
+    if not (users['pending_payments'] or users['pending_payouts']):
+        message += "None!"
+    await update.message.reply_text(message)
 
 async def audit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
@@ -375,7 +484,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     user_id_str = str(user_id)
     data = query.data
-    # Pass the action explicitly for rate limit checking
     action = data if data in ['client', 'engager', 'help', 'tasks', 'balance'] else None
     is_signup_action = data in ['client', 'engager', 'join', 'help', 'start']
     if not check_rate_limit(user_id, is_signup_action=is_signup_action, action=action):
@@ -977,7 +1085,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         del users['active_orders'][order_id]
                     del user_data['task_timers'][timer_key]
                     total_balance = user_data.get('earnings', 0) + user_data.get('signup_bonus', 0)
-                    await update.message.reply_text(f"Task approved! +₦{earnings}. Balance: ₦{total_balance}. Earn ₦{1000 - user_data.get('earnings', 0)} more to withdraw!")
+                    tasks_left = max(0, 1000 - user_data.get('earnings', 0)) // 20
+                    feedback = f"Only {tasks_left} tasks to ₦1,000!" if user_data.get('earnings', 0) < 1000 else "You can withdraw now!"
+                    await update.message.reply_text(f"Task approved! +₦{earnings}. Balance: ₦{total_balance}. {feedback}")
                     await context.bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=update.message.photo[-1].file_id,
                                                 caption=f"Approved task:\nEngager: {user_id}\nTask: {task_type}\nOrder: {order_id}\nTime: {int(time_spent)}s")
                     save_users()
@@ -1026,7 +1136,10 @@ async def setup_application():
     application.add_handler(CommandHandler("balance", balance))
     application.add_handler(CommandHandler("withdraw", withdraw))
     application.add_handler(CommandHandler("pay", pay))
+    application.add_handler(CommandHandler("status", status))
     application.add_handler(CommandHandler("admin", admin))
+    application.add_handler(CommandHandler("stats", stats))
+    application.add_handler(CommandHandler("pending", pending))
     application.add_handler(CommandHandler("audit", audit))
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
