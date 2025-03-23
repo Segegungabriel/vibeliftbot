@@ -1187,8 +1187,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("I’m not sure what you mean. Try /start, /client, or /engager!")
 
-# Setup application handlers
 async def setup_application():
+    logger.info("Initializing Application...")
+    await application.initialize()
+    logger.info("Application initialized successfully")
+
+    logger.info("Registering handlers...")
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("client", client))
@@ -1203,57 +1207,101 @@ async def setup_application():
     application.add_handler(CommandHandler("pending", pending))
     application.add_handler(CommandHandler("audit", audit))
     application.add_handler(CallbackQueryHandler(button))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_message))
-    logger.info("Handlers added successfully")
+    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
+    logger.info("Handlers registered successfully")
 
-# Paystack webhook endpoint
-@app.route('/paystack-webhook', methods=['POST'])
-def paystack_webhook():
-    if request.method == 'POST':
-        try:
-            data = request.get_json()
-            event = data.get('event')
-            if event == 'charge.success':
-                payment_data = data.get('data')
-                metadata = payment_data.get('metadata', {})
-                user_id = metadata.get('user_id')
-                order_id = metadata.get('order_id')
-                amount = payment_data.get('amount', 0) // 100  # Convert from kobo to naira
-                if str(user_id) in users['clients'] and users['clients'][str(user_id)].get('order_id') == order_id:
-                    order_details = users['clients'][str(user_id)]['order_details']
-                    users['active_orders'][order_id] = order_details
-                    users['clients'][str(user_id)]['step'] = 'completed'
-                    await application.bot.send_message(chat_id=user_id, 
-                                                      text="Payment successful! Your order is now active. Check progress with /status.")
-                    await application.bot.send_message(chat_id=ADMIN_GROUP_ID, 
-                                                      text=f"Payment of ₦{amount} for order {order_id} from {user_id} confirmed via Paystack. Tasks active!")
-                    save_users()
-            return "OK", 200
-        except Exception as e:
-            logger.error(f"Error processing Paystack webhook: {e}")
-            return "Error", 500
-    return "This endpoint is for Paystack webhooks (POST only).", 200
+    logger.info("Setting webhook...")
+    await application.bot.set_webhook(url=WEBHOOK_URL)
+    logger.info(f"Webhook set successfully to {WEBHOOK_URL}")
 
-# ASGI adapter for Flask app
-asgi_app = WsgiToAsgi(app)
+@app.route('/')
+def home():
+    return "VibeLift Bot is running! Interact with the bot on Telegram."
 
-# Main function to run the bot
-async def main():
+@app.route('/webhook', methods=['GET'])
+def webhook_get():
+    return "This endpoint is for Telegram webhooks (POST only).", 200
+
+@app.route('/webhook', methods=['POST'])
+async def telegram_webhook():
     try:
-        logger.info("Starting bot...")
-        await setup_application()
-        logger.info("Bot setup complete. Starting web server...")
-        config = uvicorn.Config(asgi_app, host="0.0.0.0", port=8000, log_level="info")
-        server = uvicorn.Server(config)
-        await server.serve()
+        data = request.get_json()
+        logger.info("Received Telegram webhook update: %s", data)
+        update = Update.de_json(data, application.bot)
+        logger.info("Parsed update: %s", update)
+        logger.info("Dispatching update to handlers...")
+        await application.process_update(update)
+        logger.info("Update processed successfully")
+        return "OK", 200
     except Exception as e:
-        logger.error(f"Error in main: {e}")
-        raise
+        logger.error(f"Error processing webhook update: {e}")
+        return "Error", 500
 
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except Exception as e:
-        logger.error(f"Error running bot: {e}")
-        exit(1)
+        @app.route('/paystack-webhook', methods=['POST'])
+        async def paystack_webhook():
+            if request.method == 'POST':
+                try:
+                    data = request.get_json()
+                    event = data.get('event')
+                    if event == 'charge.success':
+                        payment_data = data.get('data')
+                        metadata = payment_data.get('metadata', {})
+                        user_id = metadata.get('user_id')
+                        order_id = metadata.get('order_id')
+                        amount = payment_data.get('amount', 0) // 100  # Convert from kobo to naira
+                        if str(user_id) in users['clients'] and users['clients'][str(user_id)].get('order_id') == order_id:
+                            order_details = users['clients'][str(user_id)]['order_details']
+                            users['active_orders'][order_id] = order_details
+                            users['clients'][str(user_id)]['step'] = 'completed'
+                            await application.bot.send_message(
+                                chat_id=user_id,
+                                text="Payment confirmed! Your order is now active. Check progress with /status."
+                            )
+                            await application.bot.send_message(
+                                chat_id=ADMIN_GROUP_ID,
+                                text=f"Payment of ₦{amount} from {user_id} for order {order_id} confirmed. Tasks active!"
+                            )
+                            save_users()
+                            logger.info(f"Payment confirmed for user {user_id}, order {order_id}")
+                        else:
+                            logger.warning(f"Payment received but no matching order found: user {user_id}, order {order_id}")
+                    return "Webhook received", 200
+                except Exception as e:
+                    logger.error(f"Error in Paystack webhook: {e}")
+                    return "Error processing webhook", 500
+            return "Method not allowed", 405
+
+        # Error handler for unexpected issues
+        async def error(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            logger.error(f"Update {update} caused error {context.error}")
+            if update and update.message:
+                await update.message.reply_text("Something went wrong. Try again or contact support!")
+
+        # Main function to run the bot
+        async def main():
+            try:
+                logger.info("Starting bot setup...")
+                await setup_application()
+                
+                # Add error handler
+                application.add_error_handler(error)
+                
+                # Start the Flask app with Uvicorn
+                logger.info("Starting Flask app with Uvicorn...")
+                config = uvicorn.Config(
+                    WsgiToAsgi(app),
+                    host="0.0.0.0",
+                    port=int(os.getenv("PORT", 8000)),
+                    log_level="info"
+                )
+                server = uvicorn.Server(config)
+                await server.serve()
+            except Exception as e:
+                logger.error(f"Error in main: {e}")
+                raise
+
+        if __name__ == "__main__":
+            try:
+                asyncio.run(main())
+            except Exception as e:
+                logger.critical(f"Fatal error starting bot: {e}")
