@@ -166,10 +166,46 @@ async def client(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_rate_limit(user_id, is_signup_action=True, action='client'):
         await reply_target.reply_text("Hang on a sec and try again!")
         return
-    await reply_target.reply_text(
-        "Let’s grow your account! Reply with:\n`handle platform package`\nExample: `@NaijaFashion instagram 50` for 50 followers.\nSupported: Instagram, Facebook, TikTok, Twitter.\nPackages:\n- Followers: 10, 50, 100\n- Likes: 20, 100, 200\n- Comments: 5, 10, 50\n- Bundles: starter, pro, elite (e.g., `@NaijaFashion instagram starter`)"
+
+    # Detailed pricing and bundle info
+    pricing_text = (
+        "Grow your account with real vibes!\n"
+        "Supported Platforms: Facebook, Twitter/X, Instagram, TikTok\n\n"
+        "💡 Followers:\n"
+        "- Instagram: 10 for ₦1,200 | 50 for ₦6,000 | 100 for ₦12,000\n"
+        "- Facebook: 10 for ₦1,500 | 50 for ₦7,500 | 100 for ₦15,000\n"
+        "- TikTok: 10 for ₦1,800 | 50 for ₦9,000 | 100 for ₦18,000\n"
+        "- Twitter: 10 for ₦800 | 50 for ₦4,000 | 100 for ₦8,000\n\n"
+        "💡 Likes:\n"
+        "- Instagram: 20 for ₦600 | 100 for ₦3,000 | 200 for ₦6,000\n"
+        "- Facebook: 20 for ₦1,800 | 100 for ₦9,000 | 200 for ₦18,000\n"
+        "- TikTok: 20 for ₦1,800 | 100 for ₦9,000 | 200 for ₦18,000\n"
+        "- Twitter: 20 for ₦1,800 | 100 for ₦9,000 | 200 for ₦18,000\n\n"
+        "💡 Comments:\n"
+        "- Instagram: 5 for ₦300 | 10 for ₦600 | 50 for ₦3,000\n"
+        "- Facebook: 5 for ₦300 | 10 for ₦600 | 50 for ₦3,000\n"
+        "- TikTok: 5 for ₦600 | 10 for ₦1,200 | 50 for ₦6,000\n"
+        "- Twitter: 5 for ₦600 | 10 for ₦1,200 | 50 for ₦6,000\n\n"
+        "💡 Bundles (Followers + Likes + Comments):\n"
+        "- Starter: 10 followers, 20 likes, 5 comments\n"
+        "  Instagram: ₦1,890 | Facebook: ₦3,240 | TikTok: ₦3,780 | Twitter: ₦2,880\n"
+        "- Pro: 50 followers, 100 likes, 10 comments\n"
+        "  Instagram: ₦8,640 | Facebook: ₦15,390 | TikTok: ₦17,280 | Twitter: ₦12,780\n"
+        "- Elite: 100 followers, 200 likes, 50 comments\n"
+        "  Instagram: ₦18,900 | Facebook: ₦32,400 | TikTok: ₦37,800 | Twitter: ₦28,800\n\n"
+        "What would you like to boost?"
     )
-    users['clients'][str(user_id)] = {'step': 'awaiting_order'}
+
+    keyboard = [
+        [InlineKeyboardButton("Get Followers", callback_data='select_followers')],
+        [InlineKeyboardButton("Get Likes", callback_data='select_likes')],
+        [InlineKeyboardButton("Get Comments", callback_data='select_comments')],
+        [InlineKeyboardButton("Get a Bundle", callback_data='select_bundle')],
+        [InlineKeyboardButton("Back to Start", callback_data='start')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await reply_target.reply_text(pricing_text, reply_markup=reply_markup)
+    users['clients'][str(user_id)] = {'step': 'selecting_package_type'}
     save_users()
 
 async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -178,7 +214,10 @@ async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not check_rate_limit(user_id, is_signup_action=True, action='engager'):
         await reply_target.reply_text("Hang on a sec and try again!")
         return
-    keyboard = [[InlineKeyboardButton("Join Now", callback_data='join')]]
+    keyboard = [
+        [InlineKeyboardButton("Join Now", callback_data='join')],
+        [InlineKeyboardButton("Back to Start", callback_data='start')]
+    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await reply_target.reply_text("Earn ₦100-₦1,250 daily lifting vibes!\nClick to join:", reply_markup=reply_markup)
 
@@ -256,6 +295,7 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         feedback = f"Only {tasks_left} tasks to go!" if earnings < 1000 else "Ready to withdraw!"
         keyboard = [
             [InlineKeyboardButton("Withdraw Earnings", callback_data='withdraw')],
+            [InlineKeyboardButton("See Tasks", callback_data='tasks')],
             [InlineKeyboardButton("Back to Start", callback_data='start')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -316,7 +356,8 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
             payment_url = data["data"]["authorization_url"]
             keyboard = [
                 [InlineKeyboardButton(f"Pay ₦{users['clients'][user_id_str]['amount']}", url=payment_url)],
-                [InlineKeyboardButton("Cancel Order", callback_data='cancel')]
+                [InlineKeyboardButton("Cancel Order", callback_data='cancel')],
+                [InlineKeyboardButton("Back to Start", callback_data='start')]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text("Click to pay via Paystack:", reply_markup=reply_markup)
@@ -401,7 +442,9 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if total_comments > 0:
         status_text += f"- Comments: {comments_done}/{total_comments}\n"
     status_text += "Results in 4-5 hours for small orders."
-    await update.message.reply_text(status_text)
+    keyboard = [[InlineKeyboardButton("Back to Start", callback_data='start')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(status_text, reply_markup=reply_markup)
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
@@ -412,7 +455,8 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📊 View Stats", callback_data='admin_stats')],
         [InlineKeyboardButton("🔍 Audit Task", callback_data='admin_audit')],
         [InlineKeyboardButton("💸 View Withdrawals", callback_data='admin_view_withdrawals')],
-        [InlineKeyboardButton("💳 View Pending Payments", callback_data='admin_view_payments')]
+        [InlineKeyboardButton("💳 View Pending Payments", callback_data='admin_view_payments')],
+        [InlineKeyboardButton("📋 Pending Actions", callback_data='admin_pending')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
@@ -438,7 +482,9 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"- Pending Tasks: {pending_tasks}\n"
         f"- Completed Tasks (approx.): {completed_tasks}"
     )
-    await update.message.reply_text(stats_text)
+    keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(stats_text, reply_markup=reply_markup)
 
 async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
@@ -452,7 +498,9 @@ async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message += f"- Withdrawals: {len(users['pending_payouts'])}\n"
     if not (users['pending_payments'] or users['pending_payouts']):
         message += "None!"
-    await update.message.reply_text(message)
+    keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(message, reply_markup=reply_markup)
 
 async def audit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
@@ -509,6 +557,16 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.reply_text("You’re in! Enjoy your ₦500 signup bonus. Start earning—withdraw at ₦1,000 earned!", reply_markup=reply_markup)
+        save_users()
+    elif data.startswith('select_'):
+        package_type = data.split('_')[1]
+        users['clients'][user_id_str]['order_type'] = package_type
+        users['clients'][user_id_str]['step'] = 'awaiting_order'
+        await query.message.reply_text(
+            f"Reply with: `handle platform package`\n"
+            f"Example: `@NaijaFashion instagram {'10' if package_type == 'followers' else '20' if package_type == 'likes' else '5' if package_type == 'comments' else 'starter'}`\n"
+            f"Check /client for package options."
+        )
         save_users()
     elif data.startswith('task_'):
         task_parts = data.split('_', 2)
@@ -637,6 +695,20 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=f"Payment proof from {client_id} for order: {order_id}. Amount: ₦{amount}",
                 reply_markup=reply_markup
             )
+    elif data == 'admin_pending':
+        if user_id_str != ADMIN_USER_ID:
+            await query.message.reply_text("Admin only!")
+            return
+        message = "Pending Actions:\n"
+        if users['pending_payments']:
+            message += f"- Payments: {len(users['pending_payments'])}\n"
+        if users['pending_payouts']:
+            message += f"- Withdrawals: {len(users['pending_payouts'])}\n"
+        if not (users['pending_payments'] or users['pending_payouts']):
+            message += "None!"
+        keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text(message, reply_markup=reply_markup)
     elif data == 'back_to_admin':
         if user_id_str != ADMIN_USER_ID:
             await query.message.reply_text("Admin only!")
@@ -645,7 +717,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📊 View Stats", callback_data='admin_stats')],
             [InlineKeyboardButton("🔍 Audit Task", callback_data='admin_audit')],
             [InlineKeyboardButton("💸 View Withdrawals", callback_data='admin_view_withdrawals')],
-            [InlineKeyboardButton("💳 View Pending Payments", callback_data='admin_view_payments')]
+            [InlineKeyboardButton("💳 View Pending Payments", callback_data='admin_view_payments')],
+            [InlineKeyboardButton("📋 Pending Actions", callback_data='admin_pending')]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.reply_text(
@@ -878,22 +951,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if platform not in valid_platforms:
             await update.message.reply_text("Platform must be: Instagram, Facebook, TikTok, Twitter.")
             return
-        order_type = None
-        if package in package_limits['followers'][platform]:
-            order_type = 'followers'
-        elif package in package_limits['likes'][platform]:
-            order_type = 'likes'
-        elif package in package_limits['comments'][platform]:
-            order_type = 'comments'
-        elif package in package_limits['bundle'][platform]:
-            order_type = 'bundle'
-        else:
-            await update.message.reply_text(f"Invalid package! Options: {', '.join(list(package_limits['followers'][platform].keys()) + list(package_limits['likes'][platform].keys()) + list(package_limits['comments'][platform].keys()) + list(package_limits['bundle'][platform].keys()))}")
+        order_type = users['clients'][user_id]['order_type']
+        if package not in package_limits[order_type][platform]:
+            await update.message.reply_text(f"Invalid package! Options: {', '.join(list(package_limits[order_type][platform].keys()))}")
             return
         users['clients'][user_id]['handle'] = handle
         users['clients'][user_id]['platform'] = platform
         users['clients'][user_id]['package'] = package
-        users['clients'][user_id]['order_type'] = order_type
         if order_type in ['likes', 'comments', 'bundle']:
             if order_type == 'likes':
                 await update.message.reply_text("Send the post URL for likes (e.g., https://instagram.com/p/123).")
@@ -1189,71 +1253,35 @@ async def paystack_webhook():
                     logger.info(f"Paystack payment approved: Adding order {order_id} to active_orders with details {order_details}")
                     users['active_orders'][order_id] = order_details
                     users['clients'][user_id_str]['step'] = 'completed'
-                    await application.bot.send_message(chat_id=user_id, text=f"Payment of ₦{amount} approved! Your order is active.")
-                    await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Paystack payment of ₦{amount} from {user_id} approved for order {order_id}")
+                    await application.bot.send_message(chat_id=user_id, text="Payment successful! Your order is now active. Check progress with /status.")
+                    await application.bot.send_message(chat_id=ADMIN_GROUP_ID, 
+                                                      text=f"Payment of ₦{amount} for order {order_id} from {user_id} confirmed via Paystack. Tasks active!")
                     save_users()
-            return "Webhook received", 200
+            return "OK", 200
         except Exception as e:
             logger.error(f"Error processing Paystack webhook: {e}")
             return "Error", 500
-    else:
-        html_response = """
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Payment Successful - VibeLiftBot</title>
-            <style>
-                body {
-                    font-family: Arial, sans-serif;
-                    text-align: center;
-                    padding: 50px;
-                    background-color: #f4f4f4;
-                }
-                h1 {
-                    color: #28a745;
-                }
-                p {
-                    font-size: 18px;
-                    color: #333;
-                }
-                a {
-                    display: inline-block;
-                    margin-top: 20px;
-                    padding: 10px 20px;
-                    background-color: #007bff;
-                    color: white;
-                    text-decoration: none;
-                    border-radius: 5px;
-                }
-                a:hover {
-                    background-color: #0056b3;
-                }
-            </style>
-        </head>
-        <body>
-            <h1>Payment Successful!</h1>
-            <p>Thank you for your payment. Your order is now active.</p>
-            <p>Head back to Telegram to keep using VibeLiftBot.</p>
-            <a href="https://t.me/VibeLiftBot">Return to Telegram</a>
-        </body>
-        </html>
-        """
-        return html_response, 200
+    return "This endpoint is for Paystack webhooks (POST only).", 200
 
+# ASGI adapter for Flask app
+asgi_app = WsgiToAsgi(app)
+
+# Main function to run the bot
 async def main():
-    await setup_application()
-    port = int(os.getenv("PORT", 5000))
-    logger.info(f"Starting Flask server on port {port} with uvicorn...")
-    asgi_app = WsgiToAsgi(app)
-    config = uvicorn.Config(app=asgi_app, host="0.0.0.0", port=port, log_level="info")
-    server = uvicorn.Server(config)
-    await server.serve()
+    try:
+        logger.info("Starting bot...")
+        await setup_application()
+        logger.info("Bot setup complete. Starting web server...")
+        config = uvicorn.Config(asgi_app, host="0.0.0.0", port=8000, log_level="info")
+        server = uvicorn.Server(config)
+        await server.serve()
+    except Exception as e:
+        logger.error(f"Error in main: {e}")
+        raise
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception as e:
-        logger.error(f"Error in main function: {e}")
-        raise
+        logger.error(f"Error running bot: {e}")
+        exit(1)
