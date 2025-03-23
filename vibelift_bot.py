@@ -1279,29 +1279,33 @@ async def telegram_webhook():
 
         # Main function to run the bot
         async def main():
-            try:
-                logger.info("Starting bot setup...")
-                await setup_application()
-                
-                # Add error handler
-                application.add_error_handler(error)
-                
-                # Start the Flask app with Uvicorn
-                logger.info("Starting Flask app with Uvicorn...")
-                config = uvicorn.Config(
-                    WsgiToAsgi(app),
-                    host="0.0.0.0",
-                    port=int(os.getenv("PORT", 8000)),
-                    log_level="info"
-                )
-                server = uvicorn.Server(config)
-                await server.serve()
-            except Exception as e:
-                logger.error(f"Error in main: {e}")
-                raise
+    try:
+        logger.info("Starting bot setup...")
+        await setup_application()
+        
+        # Add error handler
+        application.add_error_handler(error)
+        
+        # Get the port from the environment variable (Render provides this)
+        port = int(os.getenv("PORT"))  # No default fallback needed
+        logger.info(f"Binding to port {port} from PORT environment variable...")
+        
+        # Start the Flask app with Uvicorn
+        logger.info("Starting Flask app with Uvicorn...")
+        config = uvicorn.Config(
+            WsgiToAsgi(app),
+            host="0.0.0.0",
+            port=port,
+            log_level="info"
+        )
+        server = uvicorn.Server(config)
+        await server.serve()
+    except Exception as e:
+        logger.error(f"Error in main: {e}")
+        raise
 
-        if __name__ == "__main__":
-            try:
-                asyncio.run(main())
-            except Exception as e:
-                logger.critical(f"Fatal error starting bot: {e}")
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        logger.critical(f"Fatal error starting bot: {e}")
