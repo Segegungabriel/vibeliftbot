@@ -1220,7 +1220,7 @@ async def setup_application():
     await application.bot.set_webhook(url=WEBHOOK_URL)
     logger.info(f"Webhook set successfully to {WEBHOOK_URL}")
 
-# HTML template for the payment success page
+# HTML template for the payment success page with escaped CSS curly braces
 SUCCESS_HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -1229,20 +1229,20 @@ SUCCESS_HTML = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Payment Successful - VibeLift</title>
     <style>
-        body {
+        body {{
             font-family: Arial, sans-serif;
             text-align: center;
             padding: 50px;
             background-color: #f4f4f4;
-        }
-        h1 {
+        }}
+        h1 {{
             color: #28a745;
-        }
-        p {
+        }}
+        p {{
             font-size: 18px;
             color: #333;
-        }
-        a {
+        }}
+        a {{
             display: inline-block;
             margin-top: 20px;
             padding: 10px 20px;
@@ -1250,10 +1250,10 @@ SUCCESS_HTML = """
             color: white;
             text-decoration: none;
             border-radius: 5px;
-        }
-        a:hover {
+        }}
+        a:hover {{
             background-color: #0056b3;
-        }
+        }}
     </style>
 </head>
 <body>
@@ -1296,9 +1296,11 @@ def payment_success():
 
 @app.route('/paystack-webhook', methods=['POST'])
 async def paystack_webhook():
+    logger.info("Received Paystack webhook request")
     if request.method == 'POST':
         try:
             data = request.get_json()
+            logger.info(f"Paystack webhook data: {data}")
             event = data.get('event')
             if event == 'charge.success':
                 payment_data = data.get('data')
@@ -1338,6 +1340,7 @@ async def error(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     try:
         logger.info("Starting bot setup...")
+        logger.info(f"PAYSTACK_WEBHOOK_URL is set to: {PAYSTACK_WEBHOOK_URL}")
         await setup_application()
         
         # Add error handler
