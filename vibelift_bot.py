@@ -341,10 +341,12 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     email = f"{user_id}@vibeliftbot.com"
     amount = users['clients'][user_id_str]['amount'] * 100  # Convert to kobo
+    # Use the /payment-success route as the callback URL
+    callback_url = f"{WEBHOOK_URL.rsplit('/', 1)[0]}/payment-success"
     payload = {
         "email": email,
         "amount": amount,
-        "callback_url": PAYSTACK_WEBHOOK_URL,
+        "callback_url": callback_url,
         "metadata": {"user_id": user_id, "order_id": users['clients'][user_id_str]['order_id']}
     }
     try:
