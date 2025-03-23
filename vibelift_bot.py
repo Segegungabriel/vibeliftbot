@@ -1,342 +1,225 @@
 import os
-import json
 import time
 import logging
-import asyncio
-import random
-from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from datetime import datetime
+import json
+import random
+import string
 import requests
-import uvicorn
-from asgiref.wsgi import WsgiToAsgi
+from flask import Flask, request
+from pymongo import MongoClient
+from threading import Thread
 
 # Set up logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Flask app for handling webhooks
-app = Flask(__name__)
-
-# Environment variables
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+# Bot token and admin details
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_USER_ID = os.getenv("ADMIN_USER_ID")
+ADMIN_GROUP_ID = os.getenv("ADMIN_GROUP_ID")
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-PAYSTACK_WEBHOOK_URL = os.getenv("PAYSTACK_WEBHOOK_URL", f"{WEBHOOK_URL.rsplit('/', 1)[0]}/paystack-webhook")
-STORAGE_PATH = "users.json"  # Use root directory for free tier
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Ensure this is set in your environment
+WITHDRAWAL_LIMIT = 5000
 
-# Paystack API headers
+# Paystack headers
 PAYSTACK_HEADERS = {
     "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
     "Content-Type": "application/json"
 }
 
-# Bot token, admin IDs, and withdrawal limit
-TOKEN = TELEGRAM_TOKEN or '7637213737:AAHz9Kvcxj-UZhDlKyyhc9fqoD51JBSsViA'
-ADMIN_USER_ID = '1518439839'
-ADMIN_GROUP_ID = '-4762253610'
-WITHDRAWAL_LIMIT = 2000  # Trial limit for withdrawals
+# Rate limiting
+RATE_LIMIT = 2  # seconds between commands
+user_last_command = {}
 
-# Initialize users dictionary
-users = {
-    'clients': {}, 'engagers': {}, 'pending_tasks': {}, 'last_interaction': {},
-    'active_orders': {}, 'pending_payouts': {}, 'pending_payments': {}, 'pending_admin_actions': {}
-}
-try:
-    with open(STORAGE_PATH, 'r') as f:
-        loaded_users = json.load(f)
-        users.update(loaded_users)
-        for key in ['last_interaction', 'pending_payments', 'pending_admin_actions']:
-            if key not in users:
-                users[key] = {}
-except FileNotFoundError:
-    logger.info(f"{STORAGE_PATH} not found, starting with empty users dictionary")
+# MongoDB setup
+MONGODB_URI = os.getenv("MONGODB_URI")
+if not MONGODB_URI:
+    raise ValueError("MONGODB_URI environment variable not set. Please set it in your environment or Render dashboard.")
+client = MongoClient(MONGODB_URI)
+db = client['vibelift_db']
+users_collection = db['users']
 
+# Flask app
+app = Flask(__name__)
+
+# Load users from MongoDB (or initialize if not exists)
+def load_users():
+    users_doc = users_collection.find_one({"_id": "users"})
+    if users_doc:
+        return users_doc["data"]
+    else:
+        default_users = {
+            'clients': {},
+            'engagers': {},
+            'pending_payments': {},
+            'pending_payouts': {},
+            'active_orders': {},
+            'pending_admin_actions': {}
+        }
+        users_collection.insert_one({"_id": "users", "data": default_users})
+        return default_users
+
+# Save users to MongoDB
 def save_users():
-    try:
-        with open(STORAGE_PATH, 'w') as f:
-            json.dump(users, f)
-        logger.info(f"{STORAGE_PATH} saved successfully")
-    except Exception as e:
-        logger.error(f"Error saving {STORAGE_PATH}: {e}")
+    users_collection.update_one(
+        {"_id": "users"},
+        {"$set": {"data": users}},
+        upsert=True
+    )
 
-# Updated check_rate_limit: Bypass for /start menu buttons
+# Initialize users
+users = load_users()
+
+# Rate limiting function
 def check_rate_limit(user_id, is_signup_action=False, action=None):
-    user_id_str = str(user_id)
     current_time = time.time()
-    last_time = users['last_interaction'].get(user_id_str, 0)
-    time_diff = current_time - last_time
-    
-    logger.info(f"Rate limit check: user={user_id_str}, action={action}, is_signup={is_signup_action}, last_time={last_time}, current_time={current_time}, diff={time_diff:.2f}s")
-    
-    # Bypass rate limit for /start menu buttons: client, engager, help
-    if action in ['client', 'engager', 'help']:
-        logger.info(f"User {user_id_str} bypassed rate limit for /start menu action {action}")
-        users['last_interaction'][user_id_str] = current_time
-        save_users()
-        return True
-    
-    # Bypass for engagers on tasks/balance
-    if action in ['tasks', 'balance'] and user_id_str in users['engagers'] and users['engagers'][user_id_str].get('joined'):
-        logger.info(f"User {user_id_str} is an engager, bypassing rate limit for {action}")
-        users['last_interaction'][user_id_str] = current_time
-        save_users()
-        return True
-    
-    # Signup actions: 1-second limit
-    if is_signup_action:
-        if time_diff < 1:
-            logger.info(f"User {user_id_str} rate limited for signup action (diff={time_diff:.2f}s < 1s)")
-            return False
-        logger.info(f"User {user_id_str} passed signup rate limit (diff={time_diff:.2f}s >= 1s)")
-        users['last_interaction'][user_id_str] = current_time
-        save_users()
-        return True
-    
-    # Other actions: 2-second limit
-    if time_diff < 2:
-        logger.info(f"User {user_id_str} rate limited for action {action} (diff={time_diff:.2f}s < 2s)")
+    last_command_time = user_last_command.get(user_id, 0)
+    if current_time - last_command_time < RATE_LIMIT:
         return False
-    logger.info(f"User {user_id_str} passed rate limit for action {action} (diff={time_diff:.2f}s >= 2s)")
-    users['last_interaction'][user_id_str] = current_time
-    save_users()
+    user_last_command[user_id] = current_time
     return True
 
-# Initialize the Application object
-logger.info("Building Application object...")
-application = Application.builder().token(TOKEN).build()
-logger.info("Application object built successfully")
-
-# Function to generate and send admin verification code
-async def generate_admin_code(user_id, action, action_data=None):
-    code = str(random.randint(100000, 999999))
-    action_id = f"{user_id}_{int(time.time())}"
-    users['pending_admin_actions'][action_id] = {
-        'user_id': user_id,
-        'action': action,
-        'action_data': action_data,
-        'code': code,
-        'expiration': time.time() + 300
-    }
-    await application.bot.send_message(chat_id=ADMIN_USER_ID, text=f"Admin verification code for {action}: {code}\nThis code expires in 5 minutes.")
-    save_users()
-    return action_id
-
-# Define all handlers
+# Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        logger.info("Received /start command from user: %s", update.message.from_user.id)
-        user_id = update.message.from_user.id
-        if not check_rate_limit(user_id, is_signup_action=True):
-            await update.message.reply_text("Hang on a sec and try again!")
-            return
-        keyboard = [
-            [InlineKeyboardButton("Grow My Account", callback_data='client')],
-            [InlineKeyboardButton("Earn Cash", callback_data='engager')],
-            [InlineKeyboardButton("Help", callback_data='help')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            "Welcome to VibeLift! 🚀\n- Boost your social media with real vibes.\n- Earn cash with simple tasks.\nWhat’s your vibe today?",
-            reply_markup=reply_markup
-        )
-        logger.info("Sent /start response to user: %s", user_id)
-    except Exception as e:
-        logger.error(f"Error in start handler for user {update.message.from_user.id}: {e}")
-        raise
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
-    reply_target = update.message or update.callback_query.message
-    if not check_rate_limit(user_id, is_signup_action=True, action='help'):
-        await reply_target.reply_text("Hang on a sec and try again!")
+    user_id = update.effective_user.id
+    if not check_rate_limit(user_id, is_signup_action=True):
+        await update.message.reply_text("Hang on a sec and try again!")
         return
     keyboard = [
-        [InlineKeyboardButton("Back to Start", callback_data='start')]
+        [InlineKeyboardButton("Join as Client", callback_data='client')],
+        [InlineKeyboardButton("Join as Engager", callback_data='engager')],
+        [InlineKeyboardButton("Help", callback_data='help')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await reply_target.reply_text(
-        "Need help?\n- Clients: Use /client, pick a package, pay with /pay.\n- Engagers: Join with /engager, earn via /tasks.\nEmail vibelift@gmail.com for support!",
+    await update.message.reply_text(
+        "Welcome to VibeLiftBot! 🚀\n"
+        "Boost your social media or earn cash by engaging.\n"
+        "Pick your role:", reply_markup=reply_markup
+    )
+
+# Client command
+async def client(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    if not check_rate_limit(user_id, action='client'):
+        await update.message.reply_text("Hang on a sec and try again!")
+        return
+    if user_id in users['clients']:
+        if users['clients'][user_id]['step'] == 'completed':
+            await update.message.reply_text("Your order is active! Results in 4-5 hours for small orders.")
+            return
+        elif users['clients'][user_id]['step'] == 'awaiting_payment':
+            await update.message.reply_text("You have an order awaiting payment. Use /pay to complete it!")
+            return
+        else:
+            await update.message.reply_text("You’re already a client! Reply with your order or use /pay.")
+            return
+    users['clients'][user_id] = {'step': 'select_package'}
+    keyboard = [
+        [InlineKeyboardButton("Followers", callback_data='select_followers')],
+        [InlineKeyboardButton("Likes", callback_data='select_likes')],
+        [InlineKeyboardButton("Comments", callback_data='select_comments')],
+        [InlineKeyboardButton("Bundle (All)", callback_data='select_bundle')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "Boost your social media! Pick a package:\n"
+        "Followers:\n- 10: ₦800-1,800\n- 50: ₦4,000-9,000\n- 100: ₦8,000-18,000\n"
+        "Likes:\n- 20: ₦600-1,800\n- 100: ₦3,000-9,000\n- 200: ₦6,000-18,000\n"
+        "Comments:\n- 5: ₦300-600\n- 10: ₦600-1,200\n- 50: ₦3,000-6,000\n"
+        "Bundles (Instagram):\n- Starter: 10F/20L/5C, ₦1,890\n- Pro: 50F/100L/10C, ₦8,640\n- Elite: 100F/200L/50C, ₦18,900\n"
+        "Prices vary by platform. Reply with: handle platform package (e.g., @NaijaFashion instagram 50).",
+        reply_markup=reply_markup
+    )
+    save_users()
+
+# Engager command
+async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    if not check_rate_limit(user_id, action='engager'):
+        await update.message.reply_text("Hang on a sec and try again!")
+        return
+    if user_id in users['engagers']:
+        keyboard = [
+            [InlineKeyboardButton("See Tasks", callback_data='tasks')],
+            [InlineKeyboardButton("Check Balance", callback_data='balance')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text("You’re already an engager! Pick an action:", reply_markup=reply_markup)
+        return
+    keyboard = [[InlineKeyboardButton("Join Now", callback_data='join')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "Earn cash by engaging! Follow, like, or comment on social media posts.\n"
+        "Earnings per task:\n- Follow: ₦20-50\n- Like: ₦10-30\n- Comment: ₦30-50\n"
+        "Get a ₦500 signup bonus! Withdraw at ₦1,000 earned (excl. bonus).",
         reply_markup=reply_markup
     )
 
-async def client(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
-    reply_target = update.message or update.callback_query.message
-    if not check_rate_limit(user_id, is_signup_action=True, action='client'):
-        await reply_target.reply_text("Hang on a sec and try again!")
-        return
-
-    # Detailed pricing and bundle info
-    pricing_text = (
-        "Grow your account with real vibes!\n"
-        "Supported Platforms: Facebook, Twitter/X, Instagram, TikTok\n\n"
-        "💡 Followers:\n"
-        "- Instagram: 10 for ₦1,200 | 50 for ₦6,000 | 100 for ₦12,000\n"
-        "- Facebook: 10 for ₦1,500 | 50 for ₦7,500 | 100 for ₦15,000\n"
-        "- TikTok: 10 for ₦1,800 | 50 for ₦9,000 | 100 for ₦18,000\n"
-        "- Twitter: 10 for ₦800 | 50 for ₦4,000 | 100 for ₦8,000\n\n"
-        "💡 Likes:\n"
-        "- Instagram: 20 for ₦600 | 100 for ₦3,000 | 200 for ₦6,000\n"
-        "- Facebook: 20 for ₦1,800 | 100 for ₦9,000 | 200 for ₦18,000\n"
-        "- TikTok: 20 for ₦1,800 | 100 for ₦9,000 | 200 for ₦18,000\n"
-        "- Twitter: 20 for ₦1,800 | 100 for ₦9,000 | 200 for ₦18,000\n\n"
-        "💡 Comments:\n"
-        "- Instagram: 5 for ₦300 | 10 for ₦600 | 50 for ₦3,000\n"
-        "- Facebook: 5 for ₦300 | 10 for ₦600 | 50 for ₦3,000\n"
-        "- TikTok: 5 for ₦600 | 10 for ₦1,200 | 50 for ₦6,000\n"
-        "- Twitter: 5 for ₦600 | 10 for ₦1,200 | 50 for ₦6,000\n\n"
-        "💡 Bundles (Followers + Likes + Comments):\n"
-        "- Starter: 10 followers, 20 likes, 5 comments\n"
-        "  Instagram: ₦1,890 | Facebook: ₦3,240 | TikTok: ₦3,780 | Twitter: ₦2,880\n"
-        "- Pro: 50 followers, 100 likes, 10 comments\n"
-        "  Instagram: ₦8,640 | Facebook: ₦15,390 | TikTok: ₦17,280 | Twitter: ₦12,780\n"
-        "- Elite: 100 followers, 200 likes, 50 comments\n"
-        "  Instagram: ₦18,900 | Facebook: ₦32,400 | TikTok: ₦37,800 | Twitter: ₦28,800\n\n"
-        "What would you like to boost?"
-    )
-
-    keyboard = [
-        [InlineKeyboardButton("Get Followers", callback_data='select_followers')],
-        [InlineKeyboardButton("Get Likes", callback_data='select_likes')],
-        [InlineKeyboardButton("Get Comments", callback_data='select_comments')],
-        [InlineKeyboardButton("Get a Bundle", callback_data='select_bundle')],
-        [InlineKeyboardButton("Back to Start", callback_data='start')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await reply_target.reply_text(pricing_text, reply_markup=reply_markup)
-    users['clients'][str(user_id)] = {'step': 'selecting_package_type'}
-    save_users()
-
-async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
-    reply_target = update.message or update.callback_query.message
-    if not check_rate_limit(user_id, is_signup_action=True, action='engager'):
-        await reply_target.reply_text("Hang on a sec and try again!")
-        return
-    keyboard = [
-        [InlineKeyboardButton("Join Now", callback_data='join')],
-        [InlineKeyboardButton("Back to Start", callback_data='start')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await reply_target.reply_text("Earn ₦100-₦1,250 daily lifting vibes!\nClick to join:", reply_markup=reply_markup)
-
-async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
-    reply_target = update.message or update.callback_query.message
-    if not check_rate_limit(user_id, is_signup_action=False, action='tasks'):
-        await reply_target.reply_text("Hang on a sec and try again!")
-        return
-    user_id_str = str(user_id)
-    if user_id_str not in users['engagers'] or not users['engagers'][user_id_str].get('joined'):
-        await reply_target.reply_text("Join first! Type /engager or click Earn Cash from /start.")
-        return
-    user_data = users['engagers'][user_id_str]
-    current_time = time.time()
-    if 'daily_tasks' not in user_data:
-        user_data['daily_tasks'] = {'count': 0, 'last_reset': current_time}
-    elif current_time - user_data['daily_tasks']['last_reset'] >= 86400:
-        user_data['daily_tasks'] = {'count': 0, 'last_reset': current_time}
-    if user_data['daily_tasks']['count'] >= 25:
-        await reply_target.reply_text("You’ve hit your daily limit of 25 tasks. Check back tomorrow!")
-        return
-    if 'tasks_per_order' not in user_data:
-        user_data['tasks_per_order'] = {}
-    logger.info(f"Active orders available for tasks: {users['active_orders']}")
-    
-    # Sort tasks: Priority tasks first, then others
-    priority_orders = {k: v for k, v in users['active_orders'].items() if v.get('priority', False)}
-    normal_orders = {k: v for k, v in users['active_orders'].items() if not v.get('priority', False)}
-    sorted_orders = {**priority_orders, **normal_orders}
-    
-    keyboard = []
-    for order_id, order in sorted_orders.items():
-        platform = order.get('platform', 'unknown')
-        handle = order.get('handle', 'unknown')
-        follows_left = order.get('follows_left', 0)
-        likes_left = order.get('likes_left', 0)
-        comments_left = order.get('comments_left', 0)
-        priority = order.get('priority', False)
-        logger.info(f"Order {order_id}: platform={platform}, handle={handle}, follows_left={follows_left}, likes_left={likes_left}, comments_left={comments_left}")
-        payouts = {
-            'instagram': {'follow': 20, 'like': 10, 'comment': 30},
-            'facebook': {'follow': 30, 'like': 20, 'comment': 30},
-            'tiktok': {'follow': 30, 'like': 20, 'comment': 40},
-            'twitter': {'follow': 25, 'like': 30, 'comment': 50}
-        }
-        payout = payouts.get(platform, {'follow': 0, 'like': 0, 'comment': 0})
-        order_tasks = user_data['tasks_per_order'].get(order_id, 0)
-        if order_tasks >= 5:
-            logger.info(f"Order {order_id} skipped: engager {user_id} has completed {order_tasks} tasks")
-            continue
-        prefix = "🚀 " if priority else ""
-        if follows_left > 0:
-            keyboard.append([InlineKeyboardButton(f"{prefix}Follow {handle} on {platform} (₦{payout['follow']})", callback_data=f'task_f_{order_id}')])
-        if likes_left > 0:
-            text = f"{prefix}Like post on {platform} (₦{payout['like']})" if not order.get('use_recent_posts') else f"{prefix}Like 3 recent posts by {handle} on {platform} (₦{payout['like']} each)"
-            keyboard.append([InlineKeyboardButton(text, callback_data=f'task_l_{order_id}')])
-        if comments_left > 0:
-            text = f"{prefix}Comment on post on {platform} (₦{payout['comment']})" if not order.get('use_recent_posts') else f"{prefix}Comment on 3 recent posts by {handle} on {platform} (₦{payout['comment']} each)"
-            keyboard.append([InlineKeyboardButton(text, callback_data=f'task_c_{order_id}')])
-    if not keyboard:
-        await reply_target.reply_text("No tasks right now. Check back in 5-10 minutes!")
-        logger.info(f"No tasks available for user {user_id}")
-        return
-    keyboard.append([InlineKeyboardButton("Back to Start", callback_data='start')])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await reply_target.reply_text("Pick a task (send screenshot after):\nLikes/comments need 60 seconds on the post!", reply_markup=reply_markup)
-    logger.info(f"Displayed {len(keyboard)} tasks for user {user_id}")
-    save_users()
-
-async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
-    reply_target = update.message or update.callback_query.message
-    if not check_rate_limit(user_id, is_signup_action=False, action='balance'):
-        await reply_target.reply_text("Hang on a sec and try again!")
-        return
-    user_id_str = str(user_id)
-    if user_id_str in users['engagers'] and users['engagers'][user_id_str].get('joined'):
-        bonus = users['engagers'][user_id_str].get('signup_bonus', 0)
-        earnings = users['engagers'][user_id_str].get('earnings', 0)
-        total_balance = bonus + earnings
-        tasks_left = max(0, 1000 - earnings) // 20  # Approx tasks to reach ₦1,000
-        feedback = f"Only {tasks_left} tasks to go!" if earnings < 1000 else "Ready to withdraw!"
-        keyboard = [
-            [InlineKeyboardButton("Withdraw Earnings", callback_data='withdraw')],
-            [InlineKeyboardButton("See Tasks", callback_data='tasks')],
-            [InlineKeyboardButton("Back to Start", callback_data='start')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await reply_target.reply_text(
-            f"Your VibeLift Balance:\n- Signup Bonus: ₦{bonus}\n- Earned: ₦{earnings}\n- Total: ₦{total_balance}\n{feedback}",
-            reply_markup=reply_markup
-        )
-    else:
-        await reply_target.reply_text("Join as an engager first! Type /engager or click Earn Cash from /start.")
-
-async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    if not check_rate_limit(user_id, is_signup_action=False):
+# Help command
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not check_rate_limit(user_id, action='help'):
         await update.message.reply_text("Hang on a sec and try again!")
         return
-    user_id_str = str(user_id)
-    if user_id_str not in users['engagers'] or not users['engagers'][user_id_str].get('joined'):
-        await update.message.reply_text("Join as an engager first! Type /engager.")
-        return
-    earnings = users['engagers'][user_id_str].get('earnings', 0)
-    bonus = users['engagers'][user_id_str].get('signup_bonus', 0)
-    total_balance = earnings + bonus
-    if earnings < 1000:
-        await update.message.reply_text(f"Need ₦1,000 earned (excluding ₦{bonus} bonus) to withdraw. Current earned: ₦{earnings}. Keep going!")
-        return
     await update.message.reply_text(
-        f"Reply with your OPay account number (e.g., 8101234567) to withdraw.\n"
-        f"Trial limit: ₦{WITHDRAWAL_LIMIT}. Your balance: ₦{total_balance}.{' You’re good to go!' if total_balance <= WITHDRAWAL_LIMIT else ' Your balance is over the limit—wait for it to lift.'}"
+        "Need help?\n"
+        "- /start: Pick your role (Client or Engager)\n"
+        "- /client: Boost your social media\n"
+        "- /engager: Earn by engaging\n"
+        "- /pay: Pay for your order (Clients)\n"
+        "- /tasks: See available tasks (Engagers)\n"
+        "- /balance: Check earnings (Engagers)\n"
+        "- /withdraw: Withdraw earnings (Engagers)\n"
+        "- /admin: Admin panel (Admin only)"
     )
-    if total_balance > WITHDRAWAL_LIMIT:
-        return
-    users['engagers'][user_id_str]['awaiting_payout'] = True
-    save_users()
+
+# Pay command
+SUCCESS_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Successful - VibeLift</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 50px;
+            background-color: #f4f4f4;
+        }
+        h1 {
+            color: #28a745;
+        }
+        p {
+            font-size: 18px;
+            color: #333;
+        }
+        a {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+        }
+        a:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <h1>Payment Successful!</h1>
+    <p>Your payment has been processed successfully. Your order is now active.</p>
+    <p>Return to the VibeLift Bot to check your order status.</p>
+    <a href="{bot_link}">Back to VibeLift Bot</a>
+</body>
+</html>
+"""
 
 async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -349,8 +232,7 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     email = f"{user_id}@vibeliftbot.com"
     amount = users['clients'][user_id_str]['amount'] * 100  # Convert to kobo
-    # Use the /payment-success route as the callback URL
-    callback_url = f"{WEBHOOK_URL.rsplit('/', 1)[0]}/payment-success"
+    callback_url = f"{WEBHOOK_URL.rsplit('/', 1)[0]}/payment-success?order_id={users['clients'][user_id_str]['order_id']}"
     payload = {
         "email": email,
         "amount": amount,
@@ -379,85 +261,140 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error initiating payment: {e}")
         await update.message.reply_text("Something went wrong. Try again later.")
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
-    if not check_rate_limit(update.message.from_user.id, is_signup_action=True):
+# Flask routes
+@app.route('/payment-success')
+def payment_success():
+    order_id = request.args.get('order_id', 'unknown')
+    bot_link = os.getenv("BOT_LINK", "https://t.me/VibeLiftBot")
+    enhanced_html = SUCCESS_HTML.replace(
+        "<p>Your payment has been processed successfully. Your order is now active.</p>",
+        f"<p>Your payment for order {order_id} has been processed successfully. Your order is now active.</p>"
+    ).replace(
+        "</head>",
+        f'<meta http-equiv="refresh" content="5;url={bot_link}"></head>'
+    )
+    return enhanced_html.format(bot_link=bot_link)
+
+@app.route('/paystack-webhook', methods=['POST'])
+async def paystack_webhook():
+    logger.info("Received Paystack webhook request")
+    if request.method == 'POST':
+        try:
+            data = request.get_json()
+            logger.info(f"Paystack webhook data: {data}")
+            event = data.get('event')
+            if event == 'charge.success':
+                payment_data = data.get('data')
+                metadata = payment_data.get('metadata', {})
+                user_id = metadata.get('user_id')
+                order_id = metadata.get('order_id')
+                amount = payment_data.get('amount', 0) // 100  # Convert from kobo to naira
+                if str(user_id) in users['clients'] and users['clients'][str(user_id)].get('order_id') == order_id:
+                                        order_details = users['clients'][str(user_id)]['order_details']
+                    order_details['priority'] = False
+                    users['active_orders'][order_id] = order_details
+                    users['clients'][str(user_id)]['step'] = 'completed'
+                    await application.bot.send_message(
+                        chat_id=user_id,
+                        text="Payment confirmed! Your order is now active. Check progress with /status."
+                    )
+                    await application.bot.send_message(
+                        chat_id=ADMIN_GROUP_ID,
+                        text=f"Payment of ₦{amount} from {user_id} for order {order_id} confirmed. Tasks active!"
+                    )
+                    save_users()
+                    logger.info(f"Payment confirmed for user {user_id}, order {order_id}")
+                else:
+                    logger.warning(f"Payment received but no matching order found: user {user_id}, order {order_id}")
+            return "Webhook received", 200
+        except Exception as e:
+            logger.error(f"Error in Paystack webhook: {e}")
+            return "Error processing webhook", 500
+    return "Method not allowed", 405
+
+# Tasks command
+async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    if user_id not in users['engagers']:
+        await update.message.reply_text("Join as an engager first with /engager!")
+        return
+    if not check_rate_limit(user_id, action='tasks'):
         await update.message.reply_text("Hang on a sec and try again!")
         return
-    if user_id not in users['clients']:
-        await update.message.reply_text("Start an order with /client first!")
+    if not users['active_orders']:
+        await update.message.reply_text("No tasks available right now. Check back later!")
         return
-    client_data = users['clients'][user_id]
-    if client_data['step'] != 'completed':
-        await update.message.reply_text("Your order isn’t active yet. Use /pay to complete it!")
-        return
-    order_id = client_data['order_id']
-    if order_id not in users['active_orders']:
-        await update.message.reply_text("Your order is done! Check your account.")
-        return
-    order = users['active_orders'][order_id]
-    package_limits = {
-        'followers': {
-            'instagram': {'10': 10, '50': 50, '100': 100},
-            'facebook': {'10': 10, '50': 50, '100': 100},
-            'tiktok': {'10': 10, '50': 50, '100': 100},
-            'twitter': {'10': 10, '50': 50, '100': 100}
-        },
-        'likes': {
-            'instagram': {'20': 20, '100': 100, '200': 200},
-            'facebook': {'20': 20, '100': 100, '200': 200},
-            'tiktok': {'20': 20, '100': 100, '200': 200},
-            'twitter': {'20': 20, '100': 100, '200': 200}
-        },
-        'comments': {
-            'instagram': {'5': 5, '10': 10, '50': 50},
-            'facebook': {'5': 5, '10': 10, '50': 50},
-            'tiktok': {'5': 5, '10': 10, '50': 50},
-            'twitter': {'5': 5, '10': 10, '50': 50}
-        },
-        'bundle': {
-            'instagram': {
-                'starter': {'follows': 10, 'likes': 20, 'comments': 5},
-                'pro': {'follows': 50, 'likes': 100, 'comments': 10},
-                'elite': {'follows': 100, 'likes': 200, 'comments': 50}
-            },
-            'facebook': {
-                'starter': {'follows': 10, 'likes': 20, 'comments': 5},
-                'pro': {'follows': 50, 'likes': 100, 'comments': 10},
-                'elite': {'follows': 100, 'likes': 200, 'comments': 50}
-            },
-            'tiktok': {
-                'starter': {'follows': 10, 'likes': 20, 'comments': 5},
-                'pro': {'follows': 50, 'likes': 100, 'comments': 10},
-                'elite': {'follows': 100, 'likes': 200, 'comments': 50}
-            },
-            'twitter': {
-                'starter': {'follows': 10, 'likes': 20, 'comments': 5},
-                'pro': {'follows': 50, 'likes': 100, 'comments': 10},
-                'elite': {'follows': 100, 'likes': 200, 'comments': 50}
-            }
-        }
-    }
-    total_follows = package_limits[order['order_type']][order['platform']][client_data['package']] if order['order_type'] != 'bundle' else package_limits['bundle'][order['platform']][client_data['package']]['follows']
-    total_likes = package_limits['likes'][order['platform']][client_data['package']] if order['order_type'] == 'likes' else (package_limits['bundle'][order['platform']][client_data['package']]['likes'] if order['order_type'] == 'bundle' else 0)
-    total_comments = package_limits['comments'][order['platform']][client_data['package']] if order['order_type'] == 'comments' else (package_limits['bundle'][order['platform']][client_data['package']]['comments'] if order['order_type'] == 'bundle' else 0)
-    follows_done = total_follows - order['follows_left']
-    likes_done = total_likes - order['likes_left']
-    comments_done = total_comments - order['comments_left']
-    status_text = f"Order Status for {order['handle']} on {order['platform']}:\n"
-    if total_follows > 0:
-        status_text += f"- Followers: {follows_done}/{total_follows}\n"
-    if total_likes > 0:
-        status_text += f"- Likes: {likes_done}/{total_likes}\n"
-    if total_comments > 0:
-        status_text += f"- Comments: {comments_done}/{total_comments}\n"
-    status_text += "Results in 4-5 hours for small orders."
-    keyboard = [[InlineKeyboardButton("Back to Start", callback_data='start')]]
+    message = "Available Tasks:\n"
+    keyboard = []
+    for order_id, order in sorted(users['active_orders'].items(), key=lambda x: x[1].get('priority', False), reverse=True):
+        platform = order.get('platform', 'unknown')
+        handle = order.get('handle', 'unknown')
+        follows_left = order.get('follows_left', 0)
+        likes_left = order.get('likes_left', 0)
+        comments_left = order.get('comments_left', 0)
+        priority = order.get('priority', False)
+        if follows_left > 0:
+            message += f"\n- Follow {handle} on {platform}: ₦20-50 {'(Priority)' if priority else ''}\n"
+            keyboard.append([InlineKeyboardButton(f"Follow: {handle}", callback_data=f'task_f_{order_id}')])
+        if likes_left > 0:
+            message += f"\n- Like post by {handle} on {platform}: ₦10-30 {'(Priority)' if priority else ''}\n"
+            keyboard.append([InlineKeyboardButton(f"Like: {handle}", callback_data=f'task_l_{order_id}')])
+        if comments_left > 0:
+            message += f"\n- Comment on post by {handle} on {platform}: ₦30-50 {'(Priority)' if priority else ''}\n"
+            keyboard.append([InlineKeyboardButton(f"Comment: {handle}", callback_data=f'task_c_{order_id}')])
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(status_text, reply_markup=reply_markup)
+    await update.message.reply_text(message, reply_markup=reply_markup)
 
+# Balance command
+async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    if user_id not in users['engagers']:
+        await update.message.reply_text("Join as an engager first with /engager!")
+        return
+    if not check_rate_limit(user_id, action='balance'):
+        await update.message.reply_text("Hang on a sec and try again!")
+        return
+    user_data = users['engagers'][user_id]
+    earnings = user_data.get('earnings', 0)
+    bonus = user_data.get('signup_bonus', 0)
+    total_balance = earnings + bonus
+    tasks_left = max(0, 1000 - earnings) // 20
+    message = f"Your Balance: ₦{total_balance}\n- Earnings: ₦{earnings}\n- Signup Bonus: ₦{bonus}\n"
+    if earnings < 1000:
+        message += f"Need {tasks_left} more tasks to withdraw at ₦1,000 earned (excl. bonus)."
+    else:
+        message += "You can withdraw now! Use /withdraw."
+    await update.message.reply_text(message)
+
+# Withdraw command
+async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    if user_id not in users['engagers']:
+        await update.message.reply_text("Join as an engager first with /engager!")
+        return
+    if not check_rate_limit(user_id, action='withdraw'):
+        await update.message.reply_text("Hang on a sec and try again!")
+        return
+    user_data = users['engagers'][user_id]
+    earnings = user_data.get('earnings', 0)
+    bonus = user_data.get('signup_bonus', 0)
+    total_balance = earnings + bonus
+    if earnings < 1000:
+        await update.message.reply_text(f"Need ₦1,000 earned (excl. ₦{bonus} bonus). Current: ₦{earnings}. Keep earning!")
+        return
+    if total_balance > WITHDRAWAL_LIMIT:
+        await update.message.reply_text(f"Trial limit is ₦{WITHDRAWAL_LIMIT}. Your balance (₦{total_balance}) is too high. Wait for the limit to lift.")
+        return
+    if user_data.get('awaiting_payout', False):
+        await update.message.reply_text("You already have a pending withdrawal. Wait for admin approval!")
+        return
+    user_data['awaiting_payout'] = True
+    await update.message.reply_text("Reply with your 10-digit OPay account number to withdraw.")
+    save_users()
+
+# Admin command
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
+    user_id = str(update.effective_user.id)
     if user_id != ADMIN_USER_ID:
         await update.message.reply_text("Admin only!")
         return
@@ -467,9 +404,9 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("💸 View Withdrawals", callback_data='admin_view_withdrawals')],
         [InlineKeyboardButton("💳 View Pending Payments", callback_data='admin_view_payments')],
         [InlineKeyboardButton("📋 Pending Actions", callback_data='admin_pending')],
-        [InlineKeyboardButton("🗑️ Clear Pending Tasks", callback_data='admin_clear_pending')],  # New option
-        [InlineKeyboardButton("📋 View Active Tasks", callback_data='admin_view_tasks')],  # New option
-        [InlineKeyboardButton("🚀 Set Task Priority", callback_data='admin_set_priority')]  # New option
+        [InlineKeyboardButton("🗑️ Clear Pending Tasks", callback_data='admin_clear_pending')],
+        [InlineKeyboardButton("📋 View Active Tasks", callback_data='admin_view_tasks')],
+        [InlineKeyboardButton("🚀 Set Task Priority", callback_data='admin_set_priority')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
@@ -479,7 +416,32 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
-    # handler to clear pending tasks
+# Admin view tasks
+async def admin_view_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.callback_query.from_user.id)
+    if user_id != ADMIN_USER_ID:
+        await update.callback_query.message.reply_text("Admin only!")
+        return
+    await update.callback_query.answer()
+    if not users['active_orders']:
+        keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.callback_query.message.reply_text("No active tasks!", reply_markup=reply_markup)
+        return
+    message = "Active Tasks:\n"
+    for order_id, order in users['active_orders'].items():
+        handle = order.get('handle', 'unknown')
+        platform = order.get('platform', 'unknown')
+        follows_left = order.get('follows_left', 0)
+        likes_left = order.get('likes_left', 0)
+        comments_left = order.get('comments_left', 0)
+        priority = "Priority" if order.get('priority', False) else "Normal"
+        message += f"\n- Order {order_id}: {handle} on {platform}\n  Follows: {follows_left}, Likes: {likes_left}, Comments: {comments_left} ({priority})\n"
+    keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.callback_query.message.reply_text(message, reply_markup=reply_markup)
+
+# Admin clear pending
 async def admin_clear_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.callback_query.from_user.id)
     if user_id != ADMIN_USER_ID:
@@ -497,21 +459,18 @@ async def admin_clear_pending(update: Update, context: ContextTypes.DEFAULT_TYPE
     if users['pending_payments'] or users['pending_payouts'] or users['active_orders']:
         message += "Current Pending Tasks and Active Orders:\n"
         
-        # Display pending payments
         for payment_id, payment in users['pending_payments'].items():
             client_id = payment['client_id']
             order_id = payment['order_id']
             amount = users['clients'][str(client_id)]['amount']
             message += f"- Payment {payment_id}: Client {client_id}, Order {order_id}, Amount: ₦{amount}\n"
         
-        # Display pending payouts
         for payout_id, payout in users['pending_payouts'].items():
             engager_id = payout['engager_id']
             amount = payout['amount']
             account = payout['account']
             message += f"- Payout {payout_id}: Engager {engager_id}, Amount: ₦{amount}, Account: {account}\n"
         
-        # Display active orders
         for order_id, order in users['active_orders'].items():
             handle = order.get('handle', 'unknown')
             platform = order.get('platform', 'unknown')
@@ -523,46 +482,14 @@ async def admin_clear_pending(update: Update, context: ContextTypes.DEFAULT_TYPE
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.callback_query.message.reply_text(message, reply_markup=reply_markup)
 
-    # Set a pending action for the admin to reply with the task to clear
     users['pending_admin_actions'][f"clear_task_{user_id}"] = {
         'user_id': int(user_id),
         'action': 'awaiting_clear_task_input',
-        'expiration': time.time() + 300  # 5 minutes to respond
+        'expiration': time.time() + 300
     }
     save_users()
 
-# New handler to view active tasks (tasks left)
-async def admin_view_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.callback_query.from_user.id)
-    if user_id != ADMIN_USER_ID:
-        await update.callback_query.message.reply_text("Admin only!")
-        return
-    await update.callback_query.answer()
-    
-    if not users['active_orders']:
-        keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.callback_query.message.reply_text("No active tasks!", reply_markup=reply_markup)
-        return
-
-    message = "Active Tasks (Tasks Left):\n"
-    for order_id, order in users['active_orders'].items():
-        handle = order.get('handle', 'unknown')
-        platform = order.get('platform', 'unknown')
-        follows_left = order.get('follows_left', 0)
-        likes_left = order.get('likes_left', 0)
-        comments_left = order.get('comments_left', 0)
-        priority = order.get('priority', False)
-        message += f"\n- Order {order_id}: {handle} on {platform} {'(Priority)' if priority else ''}\n"
-        message += f"  Follows Left: {follows_left}\n"
-        message += f"  Likes Left: {likes_left}\n"
-        message += f"  Comments Left: {comments_left}\n"
-
-    keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.callback_query.message.reply_text(message, reply_markup=reply_markup)
-
-# New handler to set task priority
+# Admin set priority
 async def admin_set_priority(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.callback_query.from_user.id)
     if user_id != ADMIN_USER_ID:
@@ -594,67 +521,21 @@ async def admin_set_priority(update: Update, context: ContextTypes.DEFAULT_TYPE)
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.callback_query.message.reply_text(message, reply_markup=reply_markup)
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
-    if user_id != ADMIN_USER_ID:
-        await update.message.reply_text("Admin only!")
-        return
-    num_clients = len(users['clients'])
-    num_engagers = len(users['engagers'])
-    pending_tasks = sum(order.get('follows_left', 0) + order.get('likes_left', 0) + order.get('comments_left', 0) for order in users['active_orders'].values())
-    completed_tasks = sum(sum(claim.get('amount', 0) for claim in users['engagers'][engager].get('claims', []) if claim['status'] == 'approved') for engager in users['engagers']) // 20
-    stats_text = (
-        f"Admin Stats:\n"
-        f"- Total Clients: {num_clients}\n"
-        f"- Total Engagers: {num_engagers}\n"
-        f"- Pending Tasks: {pending_tasks}\n"
-        f"- Completed Tasks (approx.): {completed_tasks}"
-    )
-    keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(stats_text, reply_markup=reply_markup)
+# Generate admin code
+async def generate_admin_code(user_id, action, action_data):
+    code = ''.join(random.choices(string.digits, k=6))
+    users['pending_admin_actions'][f"{action}_{user_id}"] = {
+        'user_id': user_id,
+        'action': action,
+        'action_data': action_data,
+        'code': code,
+        'expiration': time.time() + 300
+    }
+    save_users()
+    await application.bot.send_message(chat_id=user_id, text=f"Your 6-digit code for {action}: {code}")
+    return code
 
-async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
-    if user_id != ADMIN_USER_ID:
-        await update.message.reply_text("Admin only!")
-        return
-    message = "Pending Actions:\n"
-    if users['pending_payments']:
-        message += f"- Payments: {len(users['pending_payments'])}\n"
-    if users['pending_payouts']:
-        message += f"- Withdrawals: {len(users['pending_payouts'])}\n"
-    if not (users['pending_payments'] or users['pending_payouts']):
-        message += "None!"
-    keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(message, reply_markup=reply_markup)
-
-async def audit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
-    if user_id != ADMIN_USER_ID:
-        await update.message.reply_text("Admin only!")
-        return
-    if not context.args or len(context.args) < 2:
-        await update.message.reply_text("Usage: /audit <engager_id> <order_id> [reason]")
-        return
-    engager_id, order_id = context.args[0], context.args[1]
-    reason = " ".join(context.args[2:]) if len(context.args) > 2 else "No reason provided"
-    if engager_id not in users['engagers'] or 'claims' not in users['engagers'][engager_id]:
-        await update.message.reply_text("No claims found for this user.")
-        return
-    for claim in users['engagers'][engager_id]['claims']:
-        if claim['order_id'] == order_id and claim['status'] == 'approved':
-            claim['status'] = 'rejected'
-            claim['rejection_reason'] = reason
-            users['engagers'][engager_id]['earnings'] -= claim['amount']
-            await context.bot.send_message(chat_id=engager_id, 
-                                           text=f"Your task {order_id} was rejected after audit. Reason: {reason}. ₦{claim['amount']} removed.")
-            await update.message.reply_text(f"Task {order_id} for {engager_id} rejected. Balance updated.")
-            save_users()
-            return
-    await update.message.reply_text("Claim not found or already processed.")
-
+# Button handler
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
@@ -818,7 +699,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await context.bot.send_photo(
+            await application.bot.send_photo(
                 chat_id=user_id,
                 photo=payment['photo_id'],
                 caption=f"Payment proof from {client_id} for order: {order_id}. Amount: ₦{amount}",
@@ -901,36 +782,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.reply_text(f"Enter the 6-digit code sent to your private chat to reject payment {payment_id}.", reply_markup=reply_markup)
-    elif data.startswith('clear_payment_'):
-        if user_id_str != ADMIN_USER_ID:
-            await query.message.reply_text("Only admin can do this!")
-            return
-        payment_id = data.split('_')[2]
-        if payment_id in users['pending_payments']:
-            payment = users['pending_payments'][payment_id]
-            client_id = payment['client_id']
-            if str(client_id) in users['clients']:
-                del users['clients'][str(client_id)]
-            del users['pending_payments'][payment_id]
-            await query.message.reply_text(f"Payment {payment_id} cleared!")
-            await context.bot.send_message(chat_id=client_id, text="Your pending payment was cleared by the admin. Start over with /client.")
-            save_users()
-        else:
-            await query.message.reply_text(f"Payment {payment_id} not found!")
-    elif data.startswith('clear_payout_'):
-        if user_id_str != ADMIN_USER_ID:
-            await query.message.reply_text("Only admin can do this!")
-            return
-        payout_id = data.split('_')[2]
-        if payout_id in users['pending_payouts']:
-            payout = users['pending_payouts'][payout_id]
-            engager_id = payout['engager_id']
-            del users['pending_payouts'][payout_id]
-            await query.message.reply_text(f"Payout {payout_id} cleared!")
-            await context.bot.send_message(chat_id=engager_id, text="Your pending withdrawal was cleared by the admin. Contact support if needed.")
-            save_users()
-        else:
-            await query.message.reply_text(f"Payout {payout_id} not found!")
     elif data.startswith('set_priority_'):
         if user_id_str != ADMIN_USER_ID:
             await query.message.reply_text("Only admin can do this!")
@@ -939,7 +790,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Attempting to set priority for order {order_id}, current active_orders: {users['active_orders']}")
         if order_id in users['active_orders']:
             current_priority = users['active_orders'][order_id].get('priority', False)
-            users['active_orders'][order_id]['priority'] = not current_priority  # Toggle priority
+            users['active_orders'][order_id]['priority'] = not current_priority
             status = "Priority" if not current_priority else "Normal"
             await query.message.reply_text(f"Order {order_id} set to {status}!")
             save_users()
@@ -951,6 +802,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("Order canceled. Start over with /client!")
             save_users()
 
+# Message handler
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
     text = update.message.text.lower() if update.message.text else ""
@@ -993,7 +845,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     claim['status'] = 'rejected'
                     claim['rejection_reason'] = reason
                     users['engagers'][engager_id]['earnings'] -= claim['amount']
-                    await context.bot.send_message(chat_id=engager_id, 
+                    await application.bot.send_message(chat_id=engager_id, 
                                                    text=f"Your task {order_id} was rejected after audit. Reason: {reason}. ₦{claim['amount']} removed.")
                     await update.message.reply_text(f"Task {order_id} for {engager_id} rejected. Balance updated.")
                     del users['pending_admin_actions'][action_id_to_remove]
@@ -1018,7 +870,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         del users['clients'][str(client_id)]
                     del users['pending_payments'][task_id]
                     await update.message.reply_text(f"Payment {task_id} cleared!")
-                    await context.bot.send_message(chat_id=client_id, text="Your pending payment was cleared by the admin. Start over with /client.")
+                    await application.bot.send_message(chat_id=client_id, text="Your pending payment was cleared by the admin. Start over with /client.")
                 else:
                     await update.message.reply_text(f"Payment {task_id} not found!")
             elif task_type == 'payout':
@@ -1027,7 +879,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     engager_id = payout['engager_id']
                     del users['pending_payouts'][task_id]
                     await update.message.reply_text(f"Payout {task_id} cleared!")
-                    await context.bot.send_message(chat_id=engager_id, text="Your pending withdrawal was cleared by the admin. Contact support if needed.")
+                    await application.bot.send_message(chat_id=engager_id, text="Your pending withdrawal was cleared by the admin. Contact support if needed.")
                 else:
                     await update.message.reply_text(f"Payout {task_id} not found!")
             elif task_type == 'order':
@@ -1038,7 +890,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if str(client_id) in users['clients']:
                         del users['clients'][str(client_id)]
                     await update.message.reply_text(f"Order {task_id} cleared!")
-                    await context.bot.send_message(chat_id=client_id, text="Your active order was cleared by the admin. Start over with /client.")
+                    await application.bot.send_message(chat_id=client_id, text="Your active order was cleared by the admin. Start over with /client.")
                 else:
                     await update.message.reply_text(f"Order {task_id} not found!")
             else:
@@ -1062,16 +914,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     account = payout['account']
                     users['engagers'][engager_id]['earnings'] -= amount
                     del users['pending_payouts'][payout_id]
-                    await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payout of ₦{amount} to {account} for {engager_id} approved. Process it now!")
-                    await context.bot.send_message(chat_id=engager_id, text=f"Your withdrawal of ₦{amount} to {account} is approved!")
+                    await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payout of ₦{amount} to {account} for {engager_id} approved. Process it now!")
+                    await application.bot.send_message(chat_id=engager_id, text=f"Your withdrawal of ₦{amount} to {account} is approved!")
                     save_users()
             elif action == 'reject_payout':
                 payout_id = action_data['payout_id']
                 if payout_id in users['pending_payouts']:
                     engager_id = users['pending_payouts'][payout_id]['engager_id']
                     del users['pending_payouts'][payout_id]
-                    await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payout request from {engager_id} rejected.")
-                    await context.bot.send_message(chat_id=engager_id, text="Your withdrawal was rejected. Contact support!")
+                    await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payout request from {engager_id} rejected.")
+                    await application.bot.send_message(chat_id=engager_id, text="Your withdrawal was rejected. Contact support!")
                     save_users()
             elif action == 'approve_payment':
                 payment_id = action_data['payment_id']
@@ -1085,8 +937,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     del users['pending_payments'][payment_id]
                     if str(client_id) in users['clients']:
                         users['clients'][str(client_id)]['step'] = 'completed'
-                    await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payment for order {order_id} from {client_id} approved. Tasks active!")
-                    await context.bot.send_message(chat_id=client_id, text="Payment approved! Results in 4-5 hours for small orders.")
+                    await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payment for order {order_id} from {client_id} approved. Tasks active!")
+                    await application.bot.send_message(chat_id=client_id, text="Payment approved! Results in 4-5 hours for small orders.")
                     save_users()
             elif action == 'reject_payment':
                 payment_id = action_data['payment_id']
@@ -1096,12 +948,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     del users['pending_payments'][payment_id]
                     if str(client_id) in users['clients']:
                         del users['clients'][str(client_id)]
-                    await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payment for order from {client_id} rejected.")
-                    await context.bot.send_message(chat_id=client_id, text="Payment rejected. Start over with /client.")
+                    await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payment for order from {client_id} rejected.")
+                    await application.bot.send_message(chat_id=client_id, text="Payment rejected. Start over with /client.")
                     save_users()
-            await context.bot.send_message(chat_id=user_id, text=f"{action.replace('_', ' ').title()} completed!")
+            await application.bot.send_message(chat_id=user_id, text=f"{action.replace('_', ' ').title()} completed!")
         else:
-            await context.bot.send_message(chat_id=user_id, text="Wrong code! Try again.")
+            await application.bot.send_message(chat_id=user_id, text="Wrong code! Try again.")
         return
 
     package_limits = {
@@ -1183,417 +1035,164 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if package not in package_limits[order_type][platform]:
             await update.message.reply_text(f"Invalid package! Options: {', '.join(list(package_limits[order_type][platform].keys()))}")
             return
-        users['clients'][user_id]['handle'] = handle
-        users['clients'][user_id]['platform'] = platform
-        users['clients'][user_id]['package'] = package
-        if order_type in ['likes', 'comments', 'bundle']:
-            if order_type == 'likes':
-                await update.message.reply_text("Send the post URL for likes (e.g., https://instagram.com/p/123).")
-            elif order_type == 'comments':
-                await update.message.reply_text("Send the post URL for comments (e.g., https://instagram.com/p/123).")
-            else:
-                await update.message.reply_text("Likes/comments on 3 recent posts by default.\nSend a URL for likes/comments or reply 'default'.")
-            users['clients'][user_id]['step'] = 'awaiting_urls'
-        else:
-            order_id = f"{user_id}_{int(time.time())}"
-            order_details = {
-                'client_id': user_id,
-                'handle': handle,
-                'platform': platform,
-                'follows_left': package_limits['followers'][platform][package],
-                'likes_left': 0,
-                'comments_left': 0,
-                'like_url': '',
-                'comment_url': '',
-                'order_type': order_type,
-                'use_recent_posts': False,
-                'priority': False
-            }
-            users['clients'][user_id]['step'] = 'awaiting_payment'
-            users['clients'][user_id]['order_id'] = order_id
-            users['clients'][user_id]['amount'] = pricing['followers'][platform][package]
-            users['clients'][user_id]['order_details'] = order_details
-            keyboard = [[InlineKeyboardButton("Cancel Order", callback_data='cancel')]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text(f"Got it! Boosting {package} followers for {handle} on {platform}. Use /pay to complete your order!", reply_markup=reply_markup)
-            await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"New order from {user_id}: {handle} {platform} {package} (followers). Awaiting payment.")
-        save_users()
-    elif user_id in users['clients'] and users['clients'][user_id]['step'] == 'awaiting_urls':
-        order_type = users['clients'][user_id]['order_type']
-        handle = users['clients'][user_id]['handle']
-        platform = users['clients'][user_id]['platform']
-        package = users['clients'][user_id]['package']
         order_id = f"{user_id}_{int(time.time())}"
-        order_details = {}
         if order_type == 'bundle':
-            limits = package_limits['bundle'][platform][package]
-            use_recent_posts = (text == 'default')
-            logger.info(f"User {user_id} replied with '{text}' for bundle order, use_recent_posts={use_recent_posts}")
-            if use_recent_posts:
-                like_url = comment_url = "Recent posts"
-            else:
-                urls = text.split()
-                if len(urls) == 1:
-                    like_url = comment_url = urls[0]
-                elif len(urls) == 2:
-                    like_url, comment_url = urls[0], urls[1]
-                else:
-                    await update.message.reply_text("Send one URL (for both) or two URLs (likes, comments).")
-                    return
-                if not use_recent_posts and not (like_url.startswith('http://') or like_url.startswith('https://')):
-                    await update.message.reply_text("Invalid URL! Must start with http:// or https://.")
-                    return
-                if not use_recent_posts and platform not in like_url.lower():
-                    await update.message.reply_text(f"URL must match {platform}.")
-                    return
+            amount = package_limits['bundle'][platform][package]['price']
             order_details = {
-                'client_id': user_id,
+                'client_id': int(user_id),
+                'order_id': order_id,
                 'handle': handle,
                 'platform': platform,
-                'follows_left': limits['follows'],
-                'likes_left': limits['likes'],
-                'comments_left': limits['comments'],
-                'like_url': like_url,
-                'comment_url': comment_url,
-                'order_type': order_type,
-                'use_recent_posts': use_recent_posts,
+                'follows_left': package_limits['bundle'][platform][package]['follows'],
+                'likes_left': package_limits['bundle'][platform][package]['likes'],
+                'comments_left': package_limits['bundle'][platform][package]['comments'],
+                'use_recent_posts': True,
                 'priority': False
             }
-            amount = limits['price']
-            package_display = f"{limits['follows']} followers, {limits['likes']} likes, {limits['comments']} comments"
         else:
-            urls = text.split()
-            if len(urls) != 1:
-                await update.message.reply_text("Send exactly one URL.")
-                return
-            url = urls[0]
-            if not (url.startswith('http://') or url.startswith('https://')):
-                await update.message.reply_text("Invalid URL! Must start with http:// or https://.")
-                return
-            if platform not in url.lower():
-                await update.message.reply_text(f"URL must match {platform}.")
-                return
-            if order_type == 'likes':
-                order_details = {
-                    'client_id': user_id,
-                    'handle': handle,
-                    'platform': platform,
-                    'follows_left': 0,
-                    'likes_left': package_limits['likes'][platform][package],
-                    'comments_left': 0,
-                    'like_url': url,
-                    'comment_url': '',
-                    'order_type': order_type,
-                    'use_recent_posts': False,
-                    'priority': False
-                }
-                amount = pricing['likes'][platform][package]
-                package_display = f"{package} likes"
-            else:
-                order_details = {
-                    'client_id': user_id,
-                    'handle': handle,
-                    'platform': platform,
-                    'follows_left': 0,
-                    'likes_left': 0,
-                    'comments_left': package_limits['comments'][platform][package],
-                    'like_url': '',
-                    'comment_url': url,
-                    'order_type': order_type,
-                    'use_recent_posts': False,
-                    'priority': False
-                }
-                amount = pricing['comments'][platform][package]
-                package_display = f"{package} comments"
-        users['clients'][user_id]['step'] = 'awaiting_payment'
-        users['clients'][user_id]['order_id'] = order_id
-        users['clients'][user_id]['amount'] = amount
-        users['clients'][user_id]['order_details'] = order_details
-        keyboard = [[InlineKeyboardButton("Cancel Order", callback_data='cancel')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(f"Got it! Boosting {package_display} for {handle} on {platform}. Use /pay to complete your order!", reply_markup=reply_markup)
-        await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"New order from {user_id}: {handle} {platform} {package} ({order_type}). Awaiting payment.")
-        save_users()
-    elif user_id in users['clients'] and users['clients'][user_id]['step'] == 'awaiting_payment' and 'proof' in text:
-        if update.message.photo:
-            payment_id = f"{user_id}_{int(time.time())}"
-            users['pending_payments'][payment_id] = {
-                'client_id': user_id,
-                'order_id': users['clients'][user_id]['order_id'],
-                'order_details': users['clients'][user_id]['order_details'],
-                'photo_id': update.message.photo[-1].file_id
+            amount = pricing[order_type][platform][package]
+            order_details = {
+                'client_id': int(user_id),
+                'order_id': order_id,
+                'handle': handle,
+                'platform': platform,
+                'follows_left': package_limits[order_type][platform][package] if order_type == 'followers' else 0,
+                'likes_left': package_limits[order_type][platform][package] if order_type == 'likes' else 0,
+                'comments_left': package_limits[order_type][platform][package] if order_type == 'comments' else 0,
+                'use_recent_posts': True,
+                'priority': False
             }
-            await update.message.reply_text("Payment proof sent! Waiting for admin approval.")
-            keyboard = [[InlineKeyboardButton("Approve", callback_data=f'approve_payment_{payment_id}'), InlineKeyboardButton("Reject", callback_data=f'reject_payment_{payment_id}')]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await context.bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=update.message.photo[-1].file_id,
-                                        caption=f"Payment proof from {user_id} for order: {users['clients'][user_id]['order_id']}. Amount: ₦{users['clients'][user_id]['amount']}",
-                                        reply_markup=reply_markup)
-            save_users()
-        else:
-            await update.message.reply_text("Attach a screenshot of your payment proof!")
-    elif user_id in users['engagers'] and users['engagers'][user_id].get('joined') and update.message.photo:
-        user_data = users['engagers'][user_id]
-        if 'task_timers' not in user_data or not user_data['task_timers']:
-            await update.message.reply_text("Claim a task first with /tasks!")
+        users['clients'][user_id]['step'] = 'awaiting_payment'
+        users['clients'][user_id]['amount'] = amount
+        users['clients'][user_id]['order_id'] = order_id
+        users['clients'][user_id]['order_details'] = order_details
+        await update.message.reply_text(
+            f"Order Summary:\n"
+            f"Handle: {handle}\n"
+            f"Platform: {platform}\n"
+            f"Package: {package}\n"
+            f"Amount: ₦{amount}\n"
+            f"Use /pay to proceed with payment."
+        )
+        save_users()
+    elif user_id in users['clients'] and users['clients'][user_id]['step'] == 'awaiting_payment' and text == 'proof':
+        if not update.message.photo:
+            await update.message.reply_text("Please send a screenshot of your payment proof.")
             return
-        task_claimed = False
-        for order_id in list(users['active_orders'].keys()):
-            for task_type in ['f', 'l', 'c']:
-                timer_key = f"{order_id}_{task_type}"
-                if timer_key in user_data['task_timers']:
-                    task_claimed = True
-                    claim_time = user_data['task_timers'][timer_key]
-                    time_spent = time.time() - claim_time
-                    if task_type in ['l', 'c'] and time_spent < 60:
-                        await update.message.reply_text(f"Too quick! Spend 60 seconds. You took {int(time_spent)}s.")
-                        await context.bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=update.message.photo[-1].file_id,
-                                                    caption=f"Rejected task:\nEngager: {user_id}\nTask: {task_type}\nOrder: {order_id}\nTime: {int(time_spent)}s")
-                        return
-                    order = users['active_orders'][order_id]
-                    platform = order['platform']
-                    payouts = {
-                        'instagram': {'f': 20, 'l': 10, 'c': 30},
-                        'facebook': {'f': 30, 'l': 20, 'c': 30},
-                        'tiktok': {'f': 30, 'l': 20, 'c': 40},
-                        'twitter': {'f': 25, 'l': 30, 'c': 50}
-                    }
-                    earnings = payouts[platform][task_type]
-                    user_data['earnings'] = user_data.get('earnings', 0) + earnings
-                    user_data['daily_tasks']['count'] += 1
-                    user_data['tasks_per_order'][order_id] = user_data['tasks_per_order'].get(order_id, 0) + 1
-                    user_data['claims'].append({
-                        'order_id': order_id,
-                        'task_type': task_type,
-                        'status': 'approved',
-                        'amount': earnings,
-                        'timestamp': time.time()
-                    })
-                    if task_type == 'f':
-                        order['follows_left'] -= 1
-                    elif task_type == 'l':
-                        order['likes_left'] -= 1
-                    elif task_type == 'c':
-                        order['comments_left'] -= 1
-                    if order['follows_left'] <= 0 and order['likes_left'] <= 0 and order['comments_left'] <= 0:
-                        client_id = order.get('client_id')
-                        if client_id:
-                            await context.bot.send_message(chat_id=client_id, text=f"Your order for {order['handle']} on {order['platform']} is done! Check your account.")
-                        del users['active_orders'][order_id]
-                    del user_data['task_timers'][timer_key]
-                    total_balance = user_data.get('earnings', 0) + user_data.get('signup_bonus', 0)
-                    tasks_left = max(0, 1000 - user_data.get('earnings', 0)) // 20
-                    feedback = f"Only {tasks_left} tasks to ₦1,000!" if user_data.get('earnings', 0) < 1000 else "You can withdraw now!"
-                    await update.message.reply_text(f"Task approved! +₦{earnings}. Balance: ₦{total_balance}. {feedback}")
-                    await context.bot.send_photo(chat_id=ADMIN_GROUP_ID, photo=update.message.photo[-1].file_id,
-                                                caption=f"Approved task:\nEngager: {user_id}\nTask: {task_type}\nOrder: {order_id}\nTime: {int(time_spent)}s")
-                    save_users()
-                    return
-        if not task_claimed:
-            await update.message.reply_text("Claim a task first with /tasks!")
+        photo_id = update.message.photo[-1].file_id
+        order_id = users['clients'][user_id]['order_id']
+        order_details = users['clients'][user_id]['order_details']
+        users['pending_payments'][order_id] = {
+            'client_id': int(user_id),
+            'order_id': order_id,
+            'photo_id': photo_id,
+            'order_details': order_details,
+            'timestamp': time.time()
+        }
+        await update.message.reply_text("Payment proof submitted! Awaiting admin approval.")
+        await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"New payment proof from {user_id} for order {order_id}. Check /admin.")
+        save_users()
     elif user_id in users['engagers'] and users['engagers'][user_id].get('awaiting_payout', False):
-        account = text.strip()
-        if not account.isdigit() or len(account) != 10:
-            await update.message.reply_text("Invalid account! Use a 10-digit OPay number.")
+        if not text.isdigit() or len(text) != 10:
+            await update.message.reply_text("Please provide a valid 10-digit OPay account number.")
             return
-        earnings = users['engagers'][user_id].get('earnings', 0)
-        bonus = users['engagers'][user_id].get('signup_bonus', 0)
-        total_balance = earnings + bonus
-        if earnings < 1000:
-            await update.message.reply_text(f"Need ₦1,000 earned (excluding ₦{bonus} bonus). Current: ₦{earnings}. Keep earning!")
-            return
-        if total_balance > WITHDRAWAL_LIMIT:
-            await update.message.reply_text(f"Trial limit is ₦{WITHDRAWAL_LIMIT}. Your balance (₦{total_balance}) is too high. Wait for the limit to lift.")
-            return
+        account_number = text
+        amount = users['engagers'][user_id]['earnings'] + users['engagers'][user_id]['signup_bonus']
         payout_id = f"{user_id}_{int(time.time())}"
         users['pending_payouts'][payout_id] = {
             'engager_id': user_id,
-            'amount': total_balance,
-            'account': account,
+            'amount': amount,
+            'account': account_number,
             'timestamp': time.time()
         }
         users['engagers'][user_id]['awaiting_payout'] = False
-        await update.message.reply_text(f"Withdrawal request for ₦{total_balance} to {account} sent! Awaiting admin approval.")
-        await context.bot.send_message(chat_id=ADMIN_GROUP_ID, 
-                                      text=f"New withdrawal request:\nEngager: {user_id}\nAmount: ₦{total_balance}\nAccount: {account}")
+        await update.message.reply_text(f"Withdrawal request for ₦{amount} to {account_number} submitted! Awaiting admin approval.")
+        await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"New withdrawal request from {user_id}: ₦{amount} to {account_number}. Check /admin.")
         save_users()
+    elif any(timer_key in users['engagers'].get(user_id, {}).get('task_timers', {}) for timer_key in users['engagers'].get(user_id, {}).get('task_timers', {})):
+        if not update.message.photo:
+            await update.message.reply_text("Please send a screenshot to verify your task completion.")
+            return
+        photo_id = update.message.photo[-1].file_id
+        for timer_key in list(users['engagers'][user_id]['task_timers'].keys()):
+            order_id, task_type = timer_key.rsplit('_', 1)
+            if order_id not in users['active_orders']:
+                del users['engagers'][user_id]['task_timers'][timer_key]
+                continue
+            time_spent = time.time() - users['engagers'][user_id]['task_timers'][timer_key]
+            if task_type in ['l', 'c'] and time_spent < 60:
+                await update.message.reply_text(f"Spend at least 60 seconds on the task! You've spent {int(time_spent)} seconds.")
+                return
+            del users['engagers'][user_id]['task_timers'][timer_key]
+            amount = {'f': 20, 'l': 10, 'c': 30}[task_type]
+            users['engagers'][user_id]['earnings'] = users['engagers'][user_id].get('earnings', 0) + amount
+            if 'claims' not in users['engagers'][user_id]:
+                users['engagers'][user_id]['claims'] = []
+            users['engagers'][user_id]['claims'].append({
+                'order_id': order_id,
+                'task_type': task_type,
+                'amount': amount,
+                'status': 'approved',
+                'photo_id': photo_id
+            })
+            if task_type == 'f':
+                users['active_orders'][order_id]['follows_left'] -= 1
+            elif task_type == 'l':
+                users['active_orders'][order_id]['likes_left'] -= 1
+            elif task_type == 'c':
+                users['active_orders'][order_id]['comments_left'] -= 1
+            if (users['active_orders'][order_id].get('follows_left', 0) == 0 and
+                users['active_orders'][order_id].get('likes_left', 0) == 0 and
+                users['active_orders'][order_id].get('comments_left', 0) == 0):
+                client_id = users['active_orders'][order_id]['client_id']
+                del users['active_orders'][order_id]
+                if str(client_id) in users['clients']:
+                    del users['clients'][str(client_id)]
+                await application.bot.send_message(chat_id=client_id, text="Your order is complete! Check your social media for results.")
+            task_name = {'f': 'Follow', 'l': 'Like', 'c': 'Comment'}.get(task_type, 'Task')
+            await update.message.reply_text(f"{task_name} task completed! You earned ₦{amount}. Check your balance with /balance.")
+            save_users()
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    if user_id not in users['clients'] or users['clients'][user_id]['step'] != 'completed':
+        await update.message.reply_text("No active order found! Start one with /client.")
+        return
+    order_id = users['clients'][user_id]['order_id']
+    if order_id in users['active_orders']:
+        order = users['active_orders'][order_id]
+        message = f"Order {order_id} Status:\n- Handle: {order['handle']}\n- Platform: {order['platform']}\n"
+        message += f"- Follows Left: {order['follows_left']}\n- Likes Left: {order['likes_left']}\n- Comments Left: {order['comments_left']}"
+        await update.message.reply_text(message)
     else:
-        await update.message.reply_text("I’m not sure what you mean. Try /start, /client, or /engager!")
+        await update.message.reply_text(f"Order {order_id} is complete or no longer active!")
         
-async def setup_application():
-    logger.info("Initializing Application...")
-    await application.initialize()
-    logger.info("Application initialized successfully")
+# Main function to run the bot
+def main():
+    global application  # Make application accessible globally for webhook
+    application = Application.builder().token(BOT_TOKEN).build()
 
-    logger.info("Registering handlers...")
+    # Add handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("client", client))
     application.add_handler(CommandHandler("engager", engager))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("pay", pay))
     application.add_handler(CommandHandler("tasks", tasks))
     application.add_handler(CommandHandler("balance", balance))
     application.add_handler(CommandHandler("withdraw", withdraw))
-    application.add_handler(CommandHandler("pay", pay))
-    application.add_handler(CommandHandler("status", status))
     application.add_handler(CommandHandler("admin", admin))
-    application.add_handler(CommandHandler("stats", stats))
-    application.add_handler(CommandHandler("pending", pending))
-    application.add_handler(CommandHandler("audit", audit))
+    application.add_handler(CommandHandler("status", status))
     application.add_handler(CallbackQueryHandler(button))
-    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
-    logger.info("Handlers registered successfully")
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    logger.info("Setting webhook...")
-    await application.bot.set_webhook(url=WEBHOOK_URL)
-    logger.info(f"Webhook set successfully to {WEBHOOK_URL}")
+    # Run Flask app in a separate thread
+    def run_flask():
+        app.run(host='0.0.0.0', port=5000)  # Adjust port as needed
+    flask_thread = Thread(target=run_flask)
+    flask_thread.start()
 
-# HTML template for the payment success page with escaped CSS curly braces
-SUCCESS_HTML = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Payment Successful - VibeLift</title>
-    <style>
-        body {{
-            font-family: Arial, sans-serif;
-            text-align: center;
-            padding: 50px;
-            background-color: #f4f4f4;
-        }}
-        h1 {{
-            color: #28a745;
-        }}
-        p {{
-            font-size: 18px;
-            color: #333;
-        }}
-        a {{
-            display: inline-block;
-            margin-top: 20px;
-            padding: 10px 20px;
-            background-color: #007bff;
-            color: white;
-            text-decoration: none;
-            border-radius: 5px;
-        }}
-        a:hover {{
-            background-color: #0056b3;
-        }}
-    </style>
-</head>
-<body>
-    <h1>Payment Successful!</h1>
-    <p>Your payment has been processed successfully. Your order is now active.</p>
-    <p>Return to the VibeLift Bot to check your order status.</p>
-    <a href="{bot_link}">Back to VibeLift Bot</a>
-</body>
-</html>
-"""
+    # Start Telegram bot
+    application.run_polling()
 
-@app.route('/')
-def home():
-    return "VibeLift Bot is running! Interact with the bot on Telegram."
-
-@app.route('/webhook', methods=['GET'])
-def webhook_get():
-    return "This endpoint is for Telegram webhooks (POST only).", 200
-
-@app.route('/webhook', methods=['POST'])
-async def telegram_webhook():
-    try:
-        data = request.get_json()
-        logger.info("Received Telegram webhook update: %s", data)
-        update = Update.de_json(data, application.bot)
-        logger.info("Parsed update: %s", update)
-        logger.info("Dispatching update to handlers...")
-        await application.process_update(update)
-        logger.info("Update processed successfully")
-        return "OK", 200
-    except Exception as e:
-        logger.error(f"Error processing webhook update: {e}")
-        return "Error", 500
-
-@app.route('/payment-success')
-def payment_success():
-    # The bot's Telegram link (you can customize this)
-    bot_link = "https://t.me/VibeLiftBot"  # Replace with your actual bot link
-    return SUCCESS_HTML.format(bot_link=bot_link)
-
-@app.route('/paystack-webhook', methods=['POST'])
-async def paystack_webhook():
-    logger.info("Received Paystack webhook request")
-    if request.method == 'POST':
-        try:
-            data = request.get_json()
-            logger.info(f"Paystack webhook data: {data}")
-            event = data.get('event')
-            if event == 'charge.success':
-                payment_data = data.get('data')
-                metadata = payment_data.get('metadata', {})
-                user_id = metadata.get('user_id')
-                order_id = metadata.get('order_id')
-                amount = payment_data.get('amount', 0) // 100  # Convert from kobo to naira
-                if str(user_id) in users['clients'] and users['clients'][str(user_id)].get('order_id') == order_id:
-                    order_details = users['clients'][str(user_id)]['order_details']
-                    order_details['priority'] = False  # Ensure priority is set
-                    users['active_orders'][order_id] = order_details
-                    users['clients'][str(user_id)]['step'] = 'completed'
-                    await application.bot.send_message(
-                        chat_id=user_id,
-                        text="Payment confirmed! Your order is now active. Check progress with /status."
-                    )
-                    await application.bot.send_message(
-                        chat_id=ADMIN_GROUP_ID,
-                        text=f"Payment of ₦{amount} from {user_id} for order {order_id} confirmed. Tasks active!"
-                    )
-                    save_users()
-                    logger.info(f"Payment confirmed for user {user_id}, order {order_id}")
-                else:
-                    logger.warning(f"Payment received but no matching order found: user {user_id}, order {order_id}")
-            return "Webhook received", 200
-        except Exception as e:
-            logger.error(f"Error in Paystack webhook: {e}")
-            return "Error processing webhook", 500
-    return "Method not allowed", 405
-
-# Error handler for unexpected issues
-async def error(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Update {update} caused error {context.error}")
-    if update and update.message:
-        await update.message.reply_text("Something went wrong. Try again or contact support!")
-
-# Main function to run the bot
-async def main():
-    try:
-        logger.info("Starting bot setup...")
-        logger.info(f"PAYSTACK_WEBHOOK_URL is set to: {PAYSTACK_WEBHOOK_URL}")
-        await setup_application()
-        
-        # Add error handler
-        application.add_error_handler(error)
-        
-        # Get the port from the environment variable provided by Render
-        port = int(os.getenv("PORT"))
-        logger.info(f"Retrieved PORT value: {port}")
-        
-        # Start the Flask app with Uvicorn using the retrieved port
-        logger.info("Starting Flask app with Uvicorn...")
-        config = uvicorn.Config(
-            WsgiToAsgi(app),
-            host="0.0.0.0",
-            port=port,
-            log_level="info"
-        )
-        server = uvicorn.Server(config)
-        await server.serve()
-    except Exception as e:
-        logger.error(f"Error in main: {e}")
-        raise
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except Exception as e:
-        logger.critical(f"Fatal error starting bot: {e}")
+if __name__ == '__main__':
+    main()
