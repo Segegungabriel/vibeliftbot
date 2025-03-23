@@ -1180,18 +1180,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'timestamp': time.time()
         }
         users['engagers'][user_id]['awaiting_payout'] = False
-        await update.message.reply_text(f"Withdrawal request for ₦{total_balance} to {account} sent!")
-        keyboard = [[InlineKeyboardButton("Approve", callback_data=f'approve_payout_{payout_id}'), InlineKeyboardButton("Reject", callback_data=f'reject_payout_{payout_id}')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"Payout request:\nEngager: {user_id}\nAmount: ₦{total_balance}\nAccount: {account}", reply_markup=reply_markup)
+        await update.message.reply_text(f"Withdrawal request for ₦{total_balance} to {account} sent! Awaiting admin approval.")
+        await context.bot.send_message(chat_id=ADMIN_GROUP_ID, 
+                                      text=f"New withdrawal request:\nEngager: {user_id}\nAmount: ₦{total_balance}\nAccount: {account}")
         save_users()
+    else:
+        await update.message.reply_text("I’m not sure what you mean. Try /start, /client, or /engager!")
 
+# Setup application handlers
 async def setup_application():
-    logger.info("Initializing Application...")
-    await application.initialize()
-    logger.info("Application initialized successfully")
-
-    logger.info("Registering handlers...")
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("client", client))
@@ -1206,54 +1203,29 @@ async def setup_application():
     application.add_handler(CommandHandler("pending", pending))
     application.add_handler(CommandHandler("audit", audit))
     application.add_handler(CallbackQueryHandler(button))
-    application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, handle_message))
-    logger.info("Handlers registered successfully")
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_message))
+    logger.info("Handlers added successfully")
 
-    logger.info("Setting webhook...")
-    await application.bot.set_webhook(url=WEBHOOK_URL)
-    logger.info(f"Webhook set successfully to {WEBHOOK_URL}")
-
-@app.route('/')
-def home():
-    return "VibeLift Bot is running! Interact with the bot on Telegram."
-
-@app.route('/webhook', methods=['GET'])
-def webhook_get():
-    return "This endpoint is for Telegram webhooks (POST only).", 200
-
-@app.route('/webhook', methods=['POST'])
-async def telegram_webhook():
-    try:
-        data = request.get_json()
-        logger.info("Received Telegram webhook update: %s", data)
-        update = Update.de_json(data, application.bot)
-        logger.info("Parsed update: %s", update)
-        logger.info("Dispatching update to handlers...")
-        await application.process_update(update)
-        logger.info("Update processed successfully")
-        return "OK", 200
-    except Exception as e:
-        logger.error(f"Error processing webhook update: {e}")
-        return "Error", 500
-
-@app.route('/paystack-webhook', methods=['POST', 'GET'])
-async def paystack_webhook():
+# Paystack webhook endpoint
+@app.route('/paystack-webhook', methods=['POST'])
+def paystack_webhook():
     if request.method == 'POST':
         try:
-            event = request.get_json()
-            logger.info(f"Received Paystack webhook event: {event}")
-            if event['event'] == 'charge.success':
-                user_id = event['data']['metadata'].get('user_id')
-                order_id = event['data']['metadata'].get('order_id')
-                amount = event['data']['amount'] / 100
-                user_id_str = str(user_id)
-                if user_id_str in users['clients'] and users['clients'][user_id_str]['order_id'] == order_id:
-                    order_details = users['clients'][user_id_str]['order_details']
-                    order_details['client_id'] = user_id
-                    logger.info(f"Paystack payment approved: Adding order {order_id} to active_orders with details {order_details}")
+            data = request.get_json()
+            event = data.get('event')
+            if event == 'charge.success':
+                payment_data = data.get('data')
+                metadata = payment_data.get('metadata', {})
+                user_id = metadata.get('user_id')
+                order_id = metadata.get('order_id')
+                amount = payment_data.get('amount', 0) // 100  # Convert from kobo to naira
+                if str(user_id) in users['clients'] and users['clients'][str(user_id)].get('order_id') == order_id:
+                    order_details = users['clients'][str(user_id)]['order_details']
                     users['active_orders'][order_id] = order_details
-                    users['clients'][user_id_str]['step'] = 'completed'
-                    await application.bot.send_message(chat_id=user_id, text="Payment successful! Your order is now active. Check progress with /status.")
+                    users['clients'][str(user_id)]['step'] = 'completed'
+                    await application.bot.send_message(chat_id=user_id, 
+                                                      text="Payment successful! Your order is now active. Check progress with /status.")
                     await application.bot.send_message(chat_id=ADMIN_GROUP_ID, 
                                                       text=f"Payment of ₦{amount} for order {order_id} from {user_id} confirmed via Paystack. Tasks active!")
                     save_users()
