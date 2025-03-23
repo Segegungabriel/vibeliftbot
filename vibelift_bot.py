@@ -486,38 +486,50 @@ async def admin_clear_pending(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.callback_query.message.reply_text("Admin only!")
         return
     await update.callback_query.answer()
-    
-    if not (users['pending_payments'] or users['pending_payouts']):
-        keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.callback_query.message.reply_text("No pending tasks to clear!", reply_markup=reply_markup)
-        return
 
-    message = "Pending Tasks to Clear:\n"
-    keyboard = []
- # Display pending payments
-    for payment_id, payment in users['pending_payments'].items():
-        client_id = payment['client_id']
-        order_id = payment['order_id']
-        amount = users['clients'][str(client_id)]['amount']
-        message += f"\n- Payment {payment_id}: Client {client_id}, Order {order_id}, Amount: ₦{amount}\n"
-        keyboard.append([
-            InlineKeyboardButton(f"Clear Payment {payment_id}", callback_data=f'clear_payment_{payment_id}')
-        ])
-    
-    # Display pending payouts
-    for payout_id, payout in users['pending_payouts'].items():
-        engager_id = payout['engager_id']
-        amount = payout['amount']
-        account = payout['account']
-        message += f"\n- Payout {payout_id}: Engager {engager_id}, Amount: ₦{amount}, Account: {account}\n"
-        keyboard.append([
-            InlineKeyboardButton(f"Clear Payout {payout_id}", callback_data=f'clear_payout_{payout_id}')
-        ])
-    
-    keyboard.append([InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')])
+    message = "Clear Pending Tasks:\n"
+    message += "Reply with the format:\n"
+    message += "- `payment <payment_id>` to clear a pending payment\n"
+    message += "- `payout <payout_id>` to clear a pending payout\n"
+    message += "- `order <order_id>` to clear an active order\n"
+    message += "Example: `payment 1234567890_1699999999`\n\n"
+
+    if users['pending_payments'] or users['pending_payouts'] or users['active_orders']:
+        message += "Current Pending Tasks and Active Orders:\n"
+        
+        # Display pending payments
+        for payment_id, payment in users['pending_payments'].items():
+            client_id = payment['client_id']
+            order_id = payment['order_id']
+            amount = users['clients'][str(client_id)]['amount']
+            message += f"- Payment {payment_id}: Client {client_id}, Order {order_id}, Amount: ₦{amount}\n"
+        
+        # Display pending payouts
+        for payout_id, payout in users['pending_payouts'].items():
+            engager_id = payout['engager_id']
+            amount = payout['amount']
+            account = payout['account']
+            message += f"- Payout {payout_id}: Engager {engager_id}, Amount: ₦{amount}, Account: {account}\n"
+        
+        # Display active orders
+        for order_id, order in users['active_orders'].items():
+            handle = order.get('handle', 'unknown')
+            platform = order.get('platform', 'unknown')
+            message += f"- Order {order_id}: {handle} on {platform}\n"
+    else:
+        message += "No pending tasks or active orders currently.\n"
+
+    keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.callback_query.message.reply_text(message, reply_markup=reply_markup)
+
+    # Set a pending action for the admin to reply with the task to clear
+    users['pending_admin_actions'][f"clear_task_{user_id}"] = {
+        'user_id': int(user_id),
+        'action': 'awaiting_clear_task_input',
+        'expiration': time.time() + 300  # 5 minutes to respond
+    }
+    save_users()
 
 # New handler to view active tasks (tasks left)
 async def admin_view_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -557,6 +569,8 @@ async def admin_set_priority(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.callback_query.message.reply_text("Admin only!")
         return
     await update.callback_query.answer()
+    
+    logger.info(f"Active orders before displaying priority menu: {users['active_orders']}")
     
     if not users['active_orders']:
         keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
@@ -922,6 +936,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("Only admin can do this!")
             return
         order_id = data.split('_')[2]
+        logger.info(f"Attempting to set priority for order {order_id}, current active_orders: {users['active_orders']}")
         if order_id in users['active_orders']:
             current_priority = users['active_orders'][order_id].get('priority', False)
             users['active_orders'][order_id]['priority'] = not current_priority  # Toggle priority
@@ -929,7 +944,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text(f"Order {order_id} set to {status}!")
             save_users()
         else:
-            await query.message.reply_text(f"Order {order_id} not found!")
+            await query.message.reply_text(f"Order {order_id} no longer exists! It may have been completed or cleared.")
     elif data == 'cancel':
         if user_id_str in users['clients']:
             del users['clients'][user_id_str]
@@ -985,6 +1000,50 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     save_users()
                     return
             await update.message.reply_text("Claim not found or already processed.")
+            del users['pending_admin_actions'][action_id_to_remove]
+            save_users()
+            return
+    if pending_action and action_id_to_remove.startswith('clear_task_'):
+        if pending_action['action'] == 'awaiting_clear_task_input':
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2:
+                await update.message.reply_text("Please provide: <type> <id>\nExample: payment 1234567890_1699999999\nTypes: payment, payout, order")
+                return
+            task_type, task_id = parts[0], parts[1]
+            if task_type == 'payment':
+                if task_id in users['pending_payments']:
+                    payment = users['pending_payments'][task_id]
+                    client_id = payment['client_id']
+                    if str(client_id) in users['clients']:
+                        del users['clients'][str(client_id)]
+                    del users['pending_payments'][task_id]
+                    await update.message.reply_text(f"Payment {task_id} cleared!")
+                    await context.bot.send_message(chat_id=client_id, text="Your pending payment was cleared by the admin. Start over with /client.")
+                else:
+                    await update.message.reply_text(f"Payment {task_id} not found!")
+            elif task_type == 'payout':
+                if task_id in users['pending_payouts']:
+                    payout = users['pending_payouts'][task_id]
+                    engager_id = payout['engager_id']
+                    del users['pending_payouts'][task_id]
+                    await update.message.reply_text(f"Payout {task_id} cleared!")
+                    await context.bot.send_message(chat_id=engager_id, text="Your pending withdrawal was cleared by the admin. Contact support if needed.")
+                else:
+                    await update.message.reply_text(f"Payout {task_id} not found!")
+            elif task_type == 'order':
+                if task_id in users['active_orders']:
+                    order = users['active_orders'][task_id]
+                    client_id = order['client_id']
+                    del users['active_orders'][task_id]
+                    if str(client_id) in users['clients']:
+                        del users['clients'][str(client_id)]
+                    await update.message.reply_text(f"Order {task_id} cleared!")
+                    await context.bot.send_message(chat_id=client_id, text="Your active order was cleared by the admin. Start over with /client.")
+                else:
+                    await update.message.reply_text(f"Order {task_id} not found!")
+            else:
+                await update.message.reply_text("Invalid type! Use: payment, payout, or order.")
+                return
             del users['pending_admin_actions'][action_id_to_remove]
             save_users()
             return
@@ -1148,7 +1207,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'comment_url': '',
                 'order_type': order_type,
                 'use_recent_posts': False,
-                'priority': False  # Initialize priority as False
+                'priority': False
             }
             users['clients'][user_id]['step'] = 'awaiting_payment'
             users['clients'][user_id]['order_id'] = order_id
@@ -1198,7 +1257,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'comment_url': comment_url,
                 'order_type': order_type,
                 'use_recent_posts': use_recent_posts,
-                'priority': False  # Initialize priority as False
+                'priority': False
             }
             amount = limits['price']
             package_display = f"{limits['follows']} followers, {limits['likes']} likes, {limits['comments']} comments"
@@ -1226,7 +1285,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     'comment_url': '',
                     'order_type': order_type,
                     'use_recent_posts': False,
-                    'priority': False  # Initialize priority as False
+                    'priority': False
                 }
                 amount = pricing['likes'][platform][package]
                 package_display = f"{package} likes"
@@ -1242,7 +1301,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     'comment_url': url,
                     'order_type': order_type,
                     'use_recent_posts': False,
-                    'priority': False  # Initialize priority as False
+                    'priority': False
                 }
                 amount = pricing['comments'][platform][package]
                 package_display = f"{package} comments"
