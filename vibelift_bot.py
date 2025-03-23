@@ -1181,22 +1181,44 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Main function to run the bot
 def main():
-    global application  # Make application accessible globally for webhook
+    global application
+    logger.info("Building Application object...")
     application = Application.builder().token(BOT_TOKEN).build()
+    logger.info("Application object built successfully")
 
-    # Add handlers
+    logger.info("Starting bot setup...")
+    logger.info(f"PAYSTACK_WEBHOOK_URL is set to: {PAYSTACK_WEBHOOK_URL}")
+
+    logger.info("Initializing Application...")
+    # Register handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("client", client))
     application.add_handler(CommandHandler("engager", engager))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("pay", pay))
+    application.add_handler(CommandHandler("status", status))
     application.add_handler(CommandHandler("tasks", tasks))
     application.add_handler(CommandHandler("balance", balance))
     application.add_handler(CommandHandler("withdraw", withdraw))
     application.add_handler(CommandHandler("admin", admin))
-    application.add_handler(CommandHandler("status", status))
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    logger.info("Handlers registered successfully")
+
+    # Set webhook
+    logger.info("Setting webhook...")
+    webhook_url = f"{WEBHOOK_URL}/webhook"
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path="/webhook",
+        webhook_url=webhook_url
+    )
+    logger.info(f"Webhook set successfully to {webhook_url}")
+
+    # Start Flask app in a separate thread (already handled by Render)
+    logger.info(f"Retrieved PORT value: {PORT}")
+    logger.info("Starting Flask app with Uvicorn...")
 
     # Run Flask app in a separate thread
     def run_flask():
