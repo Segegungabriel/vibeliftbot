@@ -19,7 +19,11 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # Bot token and admin details
+# Bot token and admin details
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+logger.info(f"BOT_TOKEN value: {BOT_TOKEN}")  # Add this line
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN environment variable not set. Please set it in your environment or Render dashboard.")
 ADMIN_USER_ID = os.getenv("ADMIN_USER_ID")
 ADMIN_GROUP_ID = os.getenv("ADMIN_GROUP_ID")
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
