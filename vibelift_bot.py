@@ -1237,7 +1237,7 @@ async def telegram_webhook():
         logger.error(f"Error processing webhook update: {e}")
         return "Error", 500
 
-       @app.route('/paystack-webhook', methods=['POST'])
+@app.route('/paystack-webhook', methods=['POST'])
 async def paystack_webhook():
     if request.method == 'POST':
         try:
