@@ -54,10 +54,13 @@ app = Flask(__name__)
 
 # Load users from MongoDB (or initialize if not exists)
 def load_users():
+    logger.info("Loading users from MongoDB...")
     users_doc = users_collection.find_one({"_id": "users"})
     if users_doc:
+        logger.info(f"Users found in MongoDB: {users_doc}")
         return users_doc["data"]
     else:
+        logger.info("No users found, creating default users...")
         default_users = {
             'clients': {},
             'engagers': {},
@@ -67,15 +70,17 @@ def load_users():
             'pending_admin_actions': {}
         }
         users_collection.insert_one({"_id": "users", "data": default_users})
+        logger.info("Default users created in MongoDB")
         return default_users
 
-# Save users to MongoDB
 def save_users():
+    logger.info("Saving users to MongoDB...")
     users_collection.update_one(
         {"_id": "users"},
         {"$set": {"data": users}},
         upsert=True
     )
+    logger.info("Users saved to MongoDB")
 
 # Initialize users
 users = load_users()
