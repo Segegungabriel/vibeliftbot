@@ -1237,75 +1237,75 @@ async def telegram_webhook():
         logger.error(f"Error processing webhook update: {e}")
         return "Error", 500
 
-        @app.route('/paystack-webhook', methods=['POST'])
-        async def paystack_webhook():
-            if request.method == 'POST':
-                try:
-                    data = request.get_json()
-                    event = data.get('event')
-                    if event == 'charge.success':
-                        payment_data = data.get('data')
-                        metadata = payment_data.get('metadata', {})
-                        user_id = metadata.get('user_id')
-                        order_id = metadata.get('order_id')
-                        amount = payment_data.get('amount', 0) // 100  # Convert from kobo to naira
-                        if str(user_id) in users['clients'] and users['clients'][str(user_id)].get('order_id') == order_id:
-                            order_details = users['clients'][str(user_id)]['order_details']
-                            users['active_orders'][order_id] = order_details
-                            users['clients'][str(user_id)]['step'] = 'completed'
-                            await application.bot.send_message(
-                                chat_id=user_id,
-                                text="Payment confirmed! Your order is now active. Check progress with /status."
-                            )
-                            await application.bot.send_message(
-                                chat_id=ADMIN_GROUP_ID,
-                                text=f"Payment of ₦{amount} from {user_id} for order {order_id} confirmed. Tasks active!"
-                            )
-                            save_users()
-                            logger.info(f"Payment confirmed for user {user_id}, order {order_id}")
-                        else:
-                            logger.warning(f"Payment received but no matching order found: user {user_id}, order {order_id}")
-                    return "Webhook received", 200
-                except Exception as e:
-                    logger.error(f"Error in Paystack webhook: {e}")
-                    return "Error processing webhook", 500
-            return "Method not allowed", 405
+       @app.route('/paystack-webhook', methods=['POST'])
+async def paystack_webhook():
+    if request.method == 'POST':
+        try:
+            data = request.get_json()
+            event = data.get('event')
+            if event == 'charge.success':
+                payment_data = data.get('data')
+                metadata = payment_data.get('metadata', {})
+                user_id = metadata.get('user_id')
+                order_id = metadata.get('order_id')
+                amount = payment_data.get('amount', 0) // 100  # Convert from kobo to naira
+                if str(user_id) in users['clients'] and users['clients'][str(user_id)].get('order_id') == order_id:
+                    order_details = users['clients'][str(user_id)]['order_details']
+                    users['active_orders'][order_id] = order_details
+                    users['clients'][str(user_id)]['step'] = 'completed'
+                    await application.bot.send_message(
+                        chat_id=user_id,
+                        text="Payment confirmed! Your order is now active. Check progress with /status."
+                    )
+                    await application.bot.send_message(
+                        chat_id=ADMIN_GROUP_ID,
+                        text=f"Payment of ₦{amount} from {user_id} for order {order_id} confirmed. Tasks active!"
+                    )
+                    save_users()
+                    logger.info(f"Payment confirmed for user {user_id}, order {order_id}")
+                else:
+                    logger.warning(f"Payment received but no matching order found: user {user_id}, order {order_id}")
+            return "Webhook received", 200
+        except Exception as e:
+            logger.error(f"Error in Paystack webhook: {e}")
+            return "Error processing webhook", 500
+    return "Method not allowed", 405
 
-        # Error handler for unexpected issues
-        async def error(update: Update, context: ContextTypes.DEFAULT_TYPE):
-            logger.error(f"Update {update} caused error {context.error}")
-            if update and update.message:
-                await update.message.reply_text("Something went wrong. Try again or contact support!")
+# Error handler for unexpected issues
+async def error(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Update {update} caused error {context.error}")
+    if update and update.message:
+        await update.message.reply_text("Something went wrong. Try again or contact support!")
 
-        # Main function to run the bot
-         async def main():
-             try:
-                 logger.info("Starting bot setup...")
-                 await setup_application()
-                 
-                 # Add error handler
-                 application.add_error_handler(error)
-                 
-                 # Get the port from the environment variable provided by Render
-                 port = int(os.getenv("PORT"))
-                 logger.info(f"Retrieved PORT value: {port}")
-                 
-                 # Start the Flask app with Uvicorn using the retrieved port
-                 logger.info("Starting Flask app with Uvicorn...")
-                 config = uvicorn.Config(
-                     WsgiToAsgi(app),
-                     host="0.0.0.0",
-                     port=port,
-                     log_level="info"
-                 )
-                 server = uvicorn.Server(config)
-                 await server.serve()
-             except Exception as e:
-                 logger.error(f"Error in main: {e}")
-                 raise
+# Main function to run the bot
+async def main():
+    try:
+        logger.info("Starting bot setup...")
+        await setup_application()
+        
+        # Add error handler
+        application.add_error_handler(error)
+        
+        # Get the port from the environment variable provided by Render
+        port = int(os.getenv("PORT"))
+        logger.info(f"Retrieved PORT value: {port}")
+        
+        # Start the Flask app with Uvicorn using the retrieved port
+        logger.info("Starting Flask app with Uvicorn...")
+        config = uvicorn.Config(
+            WsgiToAsgi(app),
+            host="0.0.0.0",
+            port=port,
+            log_level="info"
+        )
+        server = uvicorn.Server(config)
+        await server.serve()
+    except Exception as e:
+        logger.error(f"Error in main: {e}")
+        raise
 
-         if __name__ == "__main__":
-             try:
-                 asyncio.run(main())
-             except Exception as e:
-                 logger.critical(f"Fatal error starting bot: {e}")
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        logger.critical(f"Fatal error starting bot: {e}")
