@@ -1522,31 +1522,41 @@ if user_id in users['clients'] and users['clients'][user_id]['step'] == 'awaitin
         )
     save_users()
 elif user_id in users['clients'] and users['clients'][user_id]['step'] == 'awaiting_payment' and text == 'proof':
-    # Your code block here
-        if not update.message.photo:
-            await update.message.reply_text("Please send a screenshot of your payment proof.")
-            return
-        photo_id = update.message.photo[-1].file_id
-        order_id = users['clients'][user_id]['order_id']
-        order_details = users['clients'][user_id]['order_details']
-        users['pending_payments'][order_id] = {
-            'client_id': int(user_id),
-            'order_id': order_id,
-            'photo_id': photo_id,
-            'order_details': order_details,
-            'timestamp': time.time()
-        }
-        await update.message.reply_text("Payment proof submitted! Awaiting admin approval.")
-        await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"New payment proof from {user_id} for order {order_id}. Check /admin.")
-        save_users()
-        elif user_id in users['engagers'] and users['engagers'][user_id].get('awaiting_payout', False):
-        keyboard = [
-            [InlineKeyboardButton("Withdraw Earnings", callback_data='withdraw')],
-            [InlineKeyboardButton("Back to Start", callback_data='start')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.reply_text("You have pending earnings! Withdraw them now:", reply_markup=reply_markup)
-        account_number = text
+    if not update.message.photo:
+        await update.message.reply_text("Please send a screenshot of your payment proof.")
+        return
+    photo_id = update.message.photo[-1].file_id
+    order_id = users['clients'][user_id]['order_id']
+    order_details = users['clients'][user_id]['order_details']
+    users['pending_payments'][order_id] = {
+        'client_id': int(user_id),
+        'order_id': order_id,
+        'photo_id': photo_id,
+        'order_details': order_details,
+        'timestamp': time.time()
+    }
+    await update.message.reply_text("Payment proof submitted! Awaiting admin approval.")
+    await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"New payment proof from {user_id} for order {order_id}. Check /admin.")
+    save_users()
+elif user_id in users['engagers'] and users['engagers'][user_id].get('awaiting_payout', False):
+    account_number = text
+    if not (account_number.isdigit() and len(account_number) == 10):
+        await update.message.reply_text("Please provide a valid 10-digit OPay account number.")
+        return
+    amount = users['engagers'][user_id]['earnings'] + users['engagers'][user_id]['signup_bonus']
+    payout_id = f"{user_id}_{int(time.time())}"
+    users['pending_payouts'][payout_id] = {
+        'engager_id': user_id,
+        'amount': amount,
+        'account': account_number,
+        'timestamp': time.time()
+    }
+    users['engagers'][user_id]['awaiting_payout'] = False
+    await update.message.reply_text(f"Withdrawal request for ₦{amount} to {account_number} submitted! Awaiting admin approval.")
+    await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"New withdrawal request from {user_id}: ₦{amount} to {account_number}. Check /admin.")
+    save_users()
+elif any(timer_key in users['engagers'].get(user_id, {}).get('task_timers', {}) for timer_key in users['engagers'].get(user_id, {}).get('task_timers', {})):
+          account_number = text
         amount = users['engagers'][user_id]['earnings'] + users['engagers'][user_id]['signup_bonus']
         payout_id = f"{user_id}_{int(time.time())}"
         users['pending_payouts'][payout_id] = {
@@ -1787,18 +1797,19 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.PHOTO, handle_message))
 
-    # Set up webhook
-    logger.info(f"Setting webhook to {WEBHOOK_URL}")
+    # Use the port from Render's environment variable, default to 8443 if not set
+    port = int(os.getenv("PORT", 8443))
+    logger.info(f"Setting webhook to {WEBHOOK_URL} on port {port}")
     application.run_webhook(
         listen="0.0.0.0",
-        port=8443,
+        port=port,
         url_path=f"/{BOT_TOKEN}",
         webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}"
     )
 
 if __name__ == '__main__':
-    # Start Flask server in a separate thread
-    from threading import Thread
-    flask_thread = Thread(target=lambda: app.run(host='0.0.0.0', port=5000))
+    # Use the same port as the webhook
+    port = int(os.getenv("PORT", 8443))
+    flask_thread = Thread(target=lambda: app.run(host='0.0.0.0', port=port))
     flask_thread.start()
     main()
