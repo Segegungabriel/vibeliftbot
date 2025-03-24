@@ -1743,7 +1743,6 @@ def main():
     )
 
 if __name__ == '__main__':
-    # Use the same port as the webhook
     port = int(os.getenv("PORT", 8443))
     flask_thread = Thread(target=lambda: app.run(host='0.0.0.0', port=port))
     flask_thread.start()
