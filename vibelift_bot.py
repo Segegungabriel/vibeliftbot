@@ -1539,22 +1539,22 @@ elif user_id in users['clients'] and users['clients'][user_id]['step'] == 'await
     await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"New payment proof from {user_id} for order {order_id}. Check /admin.")
     save_users()
 elif user_id in users['engagers'] and users['engagers'][user_id].get('awaiting_payout', False):
-    account_number = text
-    if not (account_number.isdigit() and len(account_number) == 10):
-        await update.message.reply_text("Please provide a valid 10-digit OPay account number.")
-        return
-    amount = users['engagers'][user_id]['earnings'] + users['engagers'][user_id]['signup_bonus']
-    payout_id = f"{user_id}_{int(time.time())}"
-    users['pending_payouts'][payout_id] = {
-        'engager_id': user_id,
-        'amount': amount,
-        'account': account_number,
-        'timestamp': time.time()
-    }
-    users['engagers'][user_id]['awaiting_payout'] = False
-    await update.message.reply_text(f"Withdrawal request for ₦{amount} to {account_number} submitted! Awaiting admin approval.")
-    await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"New withdrawal request from {user_id}: ₦{amount} to {account_number}. Check /admin.")
-    save_users()
+        account_number = text
+        if not (account_number.isdigit() and len(account_number) == 10):
+            await update.message.reply_text("Please provide a valid 10-digit OPay account number.")
+            return
+        amount = users['engagers'][user_id]['earnings'] + users['engagers'][user_id]['signup_bonus']
+        payout_id = f"{user_id}_{int(time.time())}"
+        users['pending_payouts'][payout_id] = {
+            'engager_id': user_id,
+            'amount': amount,
+            'account': account_number,
+            'timestamp': time.time()
+        }
+        users['engagers'][user_id]['awaiting_payout'] = False
+        await update.message.reply_text(f"Withdrawal request for ₦{amount} to {account_number} submitted! Awaiting admin approval.")
+        await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"New withdrawal request from {user_id}: ₦{amount} to {account_number}. Check /admin.")
+        save_users()
 elif any(timer_key in users['engagers'].get(user_id, {}).get('task_timers', {}) for timer_key in users['engagers'].get(user_id, {}).get('task_timers', {})):
           account_number = text
         amount = users['engagers'][user_id]['earnings'] + users['engagers'][user_id]['signup_bonus']
