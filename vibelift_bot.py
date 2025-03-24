@@ -1367,7 +1367,7 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_data.get('awaiting_payout', False):
         await update.message.reply_text("You already have a pending withdrawal. Wait for admin approval!")
         return
-            user_data['awaiting_payout'] = True
+        user_data['awaiting_payout'] = True
     await update.message.reply_text("Reply with your 10-digit OPay account number to withdraw.")
     save_users()
 
