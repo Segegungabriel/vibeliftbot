@@ -1,7 +1,7 @@
 import os
 import time
 import logging
-import threading  # Here
+import threading
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from datetime import datetime
@@ -11,7 +11,7 @@ import string
 import requests
 import hmac
 import hashlib
-from flask import Flask, request
+from flask import Flask, request  # Fixed here
 from pymongo import MongoClient
 
 # Set up logging
