@@ -1539,10 +1539,13 @@ elif user_id in users['clients'] and users['clients'][user_id]['step'] == 'await
         await update.message.reply_text("Payment proof submitted! Awaiting admin approval.")
         await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"New payment proof from {user_id} for order {order_id}. Check /admin.")
         save_users()
-    elif user_id in users['engagers'] and users['engagers'][user_id].get('awaiting_payout', False):
-        if not text.isdigit() or len(text) != 10:
-            await update.message.reply_text("Please provide a valid 10-digit OPay account number.")
-            return
+        elif user_id in users['engagers'] and users['engagers'][user_id].get('awaiting_payout', False):
+        keyboard = [
+            [InlineKeyboardButton("Withdraw Earnings", callback_data='withdraw')],
+            [InlineKeyboardButton("Back to Start", callback_data='start')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text("You have pending earnings! Withdraw them now:", reply_markup=reply_markup)
         account_number = text
         amount = users['engagers'][user_id]['earnings'] + users['engagers'][user_id]['signup_bonus']
         payout_id = f"{user_id}_{int(time.time())}"
