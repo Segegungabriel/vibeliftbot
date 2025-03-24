@@ -264,6 +264,272 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Something went wrong. Try again later.")
 
 # Flask routes
+import os
+import time
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from datetime import datetime
+import json
+import random
+import string
+import requests
+import hmac
+import hashlib
+from flask import Flask, request
+from pymongo import MongoClient
+
+# Set up logging
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Bot token and admin details
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+logger.info(f"BOT_TOKEN value: {BOT_TOKEN}")
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN environment variable not set. Please set it in your environment or Render dashboard.")
+ADMIN_USER_ID = os.getenv("ADMIN_USER_ID")
+ADMIN_GROUP_ID = os.getenv("ADMIN_GROUP_ID")
+PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WITHDRAWAL_LIMIT = 5000
+
+# Paystack headers
+PAYSTACK_HEADERS = {
+    "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
+    "Content-Type": "application/json"
+}
+
+# Rate limiting
+RATE_LIMIT = 2  # seconds between commands
+user_last_command = {}
+
+# MongoDB setup
+MONGODB_URI = os.getenv("MONGODB_URI")
+if not MONGODB_URI:
+    raise ValueError("MONGODB_URI environment variable not set. Please set it in your environment or Render dashboard.")
+client = MongoClient(MONGODB_URI)
+db = client['vibelift_db']
+users_collection = db['users']
+logger.info("Successfully connected to MongoDB Atlas")
+
+# Flask app
+app = Flask(__name__)
+
+# Load users from MongoDB (or initialize if not exists)
+def load_users():
+    logger.info("Loading users from MongoDB...")
+    users_doc = users_collection.find_one({"_id": "users"})
+    if users_doc:
+        logger.info(f"Users found in MongoDB: {users_doc}")
+        return users_doc["data"]
+    else:
+        logger.info("No users found, creating default users...")
+        default_users = {
+            'clients': {},
+            'engagers': {},
+            'pending_payments': {},
+            'pending_payouts': {},
+            'active_orders': {},
+            'pending_admin_actions': {}
+        }
+        users_collection.insert_one({"_id": "users", "data": default_users})
+        logger.info("Default users created in MongoDB")
+        return default_users
+
+def save_users():
+    logger.info("Saving users to MongoDB...")
+    users_collection.update_one(
+        {"_id": "users"},
+        {"$set": {"data": users}},
+        upsert=True
+    )
+    logger.info("Users saved to MongoDB")
+
+# Initialize users
+users = load_users()
+
+# Rate limiting function
+def check_rate_limit(user_id, is_signup_action=False, action=None):
+    current_time = time.time()
+    last_command_time = user_last_command.get(user_id, 0)
+    if current_time - last_command_time < RATE_LIMIT:
+        return False
+    user_last_command[user_id] = current_time
+    return True
+
+# Start command
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not check_rate_limit(user_id, is_signup_action=True):
+        await update.message.reply_text("Hang on a sec and try again!")
+        return
+    keyboard = [
+        [InlineKeyboardButton("Join as Client", callback_data='client')],
+        [InlineKeyboardButton("Join as Engager", callback_data='engager')],
+        [InlineKeyboardButton("Help", callback_data='help')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "Welcome to VibeLiftBot! 🚀\n"
+        "Boost your social media or earn cash by engaging.\n"
+        "Pick your role:", reply_markup=reply_markup
+    )
+
+# Client command
+async def client(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    if not check_rate_limit(user_id, action='client'):
+        await update.message.reply_text("Hang on a sec and try again!")
+        return
+    if user_id in users['clients']:
+        if users['clients'][user_id]['step'] == 'completed':
+            await update.message.reply_text("Your order is active! Results in 4-5 hours for small orders.")
+            return
+        elif users['clients'][user_id]['step'] == 'awaiting_payment':
+            await update.message.reply_text("You have an order awaiting payment. Use /pay to complete it!")
+            return
+        else:
+            await update.message.reply_text("You’re already a client! Reply with your order or use /pay.")
+            return
+    users['clients'][user_id] = {'step': 'select_platform'}
+    keyboard = [
+        [InlineKeyboardButton("Instagram", callback_data='platform_instagram')],
+        [InlineKeyboardButton("Facebook", callback_data='platform_facebook')],
+        [InlineKeyboardButton("TikTok", callback_data='platform_tiktok')],
+        [InlineKeyboardButton("Twitter", callback_data='platform_twitter')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "Boost your social media! First, select a platform:", reply_markup=reply_markup
+    )
+    save_users()
+
+# Engager command
+async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    if not check_rate_limit(user_id, action='engager'):
+        await update.message.reply_text("Hang on a sec and try again!")
+        return
+    if user_id in users['engagers']:
+        keyboard = [
+            [InlineKeyboardButton("See Tasks", callback_data='tasks')],
+            [InlineKeyboardButton("Check Balance", callback_data='balance')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text("You’re already an engager! Pick an action:", reply_markup=reply_markup)
+        return
+    keyboard = [[InlineKeyboardButton("Join Now", callback_data='join')]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "Earn cash by engaging! Follow, like, or comment on social media posts.\n"
+        "Earnings per task:\n- Follow: ₦20-50\n- Like: ₦10-30\n- Comment: ₦30-50\n"
+        "Get a ₦500 signup bonus! Withdraw at ₦1,000 earned (excl. bonus).",
+        reply_markup=reply_markup
+    )
+
+# Help command
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not check_rate_limit(user_id, action='help'):
+        await update.message.reply_text("Hang on a sec and try again!")
+        return
+    await update.message.reply_text(
+        "Welcome to VibeLiftBot! Here’s how to use me:\n\n"
+        "👥 For Clients:\n"
+        "- /client: Place an order to boost your social media.\n"
+        "- /pay: Pay for your order.\n"
+        "- /status: Check your order status.\n\n"
+        "🤝 For Engagers:\n"
+        "- /engager: Join as an engager to earn money.\n"
+        "- /tasks: Complete tasks to earn rewards.\n"
+        "- /balance: Check your earnings.\n"
+        "- /withdraw: Withdraw your earnings.\n\n"
+        "🛠️ For Admins:\n"
+        "- /admin: Access the admin panel (in the admin group).\n\n"
+        "Need more help? Contact support in the admin group!"
+    )
+
+# Pay command
+@app.route('/payment-success', methods=['GET'])
+async def payment_success():
+    order_id = request.args.get('order_id')
+    if not order_id:
+        return "Error: No order ID provided", 400
+
+    logger.info(f"Payment success redirect received for order_id: {order_id}")
+
+    if order_id in users['pending_payments']:
+        user_id = users['pending_payments'][order_id]['user_id']
+        order_details = users['pending_payments'][order_id]['order_details']
+        order_details['priority'] = False
+        users['active_orders'][order_id] = order_details
+        users['clients'][str(user_id)]['step'] = 'completed'
+        del users['pending_payments'][order_id]
+        save_users()
+
+        await application.bot.send_message(
+            chat_id=user_id,
+            text=f"Payment successful! Your order (ID: {order_id}) is now active. Check progress with /status."
+        )
+        await application.bot.send_message(
+            chat_id=ADMIN_GROUP_ID,
+            text=f"Payment success redirect for order {order_id} from user {user_id}."
+        )
+        logger.info(f"Order {order_id} moved to active_orders for user {user_id}")
+
+    return f"""
+    <html>
+        <body>
+            <h1>Payment Successful!</h1>
+            <p>Your payment for order ID {order_id} has been received.</p>
+            <p>Return to Telegram to check your order status using /status.</p>
+            <a href="https://t.me/VibeLiftBot">Go back to VibeLiftBot</a>
+        </body>
+    </html>
+    """
+
+async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not check_rate_limit(user_id, is_signup_action=True):
+        await update.message.reply_text("Hang on a sec and try again!")
+        return
+    user_id_str = str(user_id)
+    if user_id_str not in users['clients'] or users['clients'][user_id_str]['step'] != 'awaiting_payment':
+        await update.message.reply_text("Start an order first with /client!")
+        return
+    email = f"{user_id}@vibeliftbot.com"
+    amount = users['clients'][user_id_str]['amount'] * 100  # Convert to kobo
+    callback_url = f"{WEBHOOK_URL.rsplit('/', 1)[0]}/payment-success?order_id={users['clients'][user_id_str]['order_id']}"
+    payload = {
+        "email": email,
+        "amount": amount,
+        "callback_url": callback_url,
+        "metadata": {"user_id": user_id, "order_id": users['clients'][user_id_str]['order_id']}
+    }
+    try:
+        response = requests.post("https://api.paystack.co/transaction/initialize", json=payload, headers=PAYSTACK_HEADERS)
+        response.raise_for_status()
+        data = response.json()
+        logger.info(f"Paystack API response: {data}")
+        if data["status"]:
+            payment_url = data["data"]["authorization_url"]
+            keyboard = [
+                [InlineKeyboardButton(f"Pay ₦{users['clients'][user_id_str]['amount']}", url=payment_url)],
+                [InlineKeyboardButton("Cancel Order", callback_data='cancel')],
+                [InlineKeyboardButton("Back to Start", callback_data='start')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text("Click to pay via Paystack:", reply_markup=reply_markup)
+        else:
+            error_message = data.get("message", "Unknown error")
+            logger.error(f"Paystack API error: {error_message}")
+            await update.message.reply_text(f"Payment failed: {error_message}. Try again.")
+    except Exception as e:
+        logger.error(f"Error initiating payment: {e}")
+        await update.message.reply_text("Something went wrong. Try again later.")
+
+# Flask routes
 @app.route('/paystack-webhook', methods=['POST'])
 async def paystack_webhook():
     logger.info("Received Paystack webhook request")
