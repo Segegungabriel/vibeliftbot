@@ -1353,6 +1353,10 @@ def webhook():
     if update:
         application.process_update(Update.de_json(update, application.bot))
     return "OK", 200
+
+@app.route('/')
+def health_check():
+    return "Service is running", 200
     
 if __name__ == '__main__':
     main()
