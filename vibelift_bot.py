@@ -1255,7 +1255,8 @@ if user_id in users['clients'] and users['clients'][user_id]['step'] == 'awaitin
             text=admin_message
         )
     save_users()
-    elif user_id in users['clients'] and users['clients'][user_id]['step'] == 'awaiting_payment' and text == 'proof':
+elif user_id in users['clients'] and users['clients'][user_id]['step'] == 'awaiting_payment' and text == 'proof':
+    # Your code block here
         if not update.message.photo:
             await update.message.reply_text("Please send a screenshot of your payment proof.")
             return
