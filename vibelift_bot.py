@@ -658,25 +658,25 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup
         )
     elif data.startswith('select_'):
-    package_type = data.split('_')[1]
-    users['clients'][user_id_str]['order_type'] = package_type
-    users['clients'][user_id_str]['step'] = 'awaiting_order'
-    platform = users['clients'][user_id_str]['platform']
-    example_url = {
-        'instagram': 'https://instagram.com/yourusername',
-        'facebook': 'https://facebook.com/yourusername',
-        'tiktok': 'https://tiktok.com/@yourusername',
-        'twitter': 'https://twitter.com/yourusername'
-    }.get(platform, 'https://platform.com/yourusername')
-    package_example = '10' if package_type == 'followers' else '20' if package_type == 'likes' else '5' if package_type == 'comments' else 'starter'
-    await query.message.edit_text(
-        f"Please provide the URL of your {platform.capitalize()} profile or a screenshot of your account.\n"
-        f"Also include the package you want.\n"
-        f"Example: `{example_url} {package_example}`\n"
-        f"Or send a screenshot of your profile with the message: `package {package_example}`\n"
-        f"Check /client for package options."
-    )
-    save_users()
+        package_type = data.split('_')[1]
+        users['clients'][user_id_str]['order_type'] = package_type
+        users['clients'][user_id_str]['step'] = 'awaiting_order'
+        platform = users['clients'][user_id_str]['platform']
+        example_url = {
+            'instagram': 'https://instagram.com/yourusername',
+            'facebook': 'https://facebook.com/yourusername',
+            'tiktok': 'https://tiktok.com/@yourusername',
+            'twitter': 'https://twitter.com/yourusername'
+        }.get(platform, 'https://platform.com/yourusername')
+        package_example = '10' if package_type == 'followers' else '20' if package_type == 'likes' else '5' if package_type == 'comments' else 'starter'
+        await query.message.edit_text(
+            f"Please provide the URL of your {platform.capitalize()} profile or a screenshot of your account.\n"
+            f"Also include the package you want.\n"
+            f"Example: `{example_url} {package_example}`\n"
+            f"Or send a screenshot of your profile with the message: `package {package_example}`\n"
+            f"Check /client for package options."
+        )
+        save_users()
     elif data.startswith('task_'):
         task_parts = data.split('_', 2)
         task_type = task_parts[1]
