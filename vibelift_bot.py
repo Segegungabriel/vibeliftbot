@@ -1211,7 +1211,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     claim['rejection_reason'] = reason
                     users['engagers'][engager_id]['earnings'] -= claim['amount']
                     await application.bot.send_message(chat_id=engager_id, 
-                                                   text=f"Your task {order_id} was rejected after audit. Reason: {reason}. ₦{claim['amount']} removed.")
+                                                    text=f"Your task {order_id} was rejected after audit. Reason: {reason}. ₦{claim['amount']} removed.")
                     await update.message.reply_text(f"Task {order_id} for {engager_id} rejected. Balance updated.")
                     del users['pending_admin_actions'][action_id_to_remove]
                     save_users()
@@ -1383,180 +1383,158 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'twitter': {'5': 600, '10': 1200, '50': 6000}
         }
     }
-if user_id in users['clients'] and users['clients'][user_id]['step'] == 'awaiting_order':
-    platform = users['clients'][user_id]['platform']
-    order_type = users['clients'][user_id]['order_type']
-    package = None
-    profile_url = None
-    profile_image_id = None
+    if user_id in users['clients'] and users['clients'][user_id]['step'] == 'awaiting_order':
+        platform = users['clients'][user_id]['platform']
+        order_type = users['clients'][user_id]['order_type']
+        package = None
+        profile_url = None
+        profile_image_id = None
 
-    # Check if the user sent a URL and package
-    if update.message.text:
-        parts = update.message.text.split()
-        if len(parts) < 2:
-            await update.message.reply_text("Please provide the URL and package (e.g., https://instagram.com/yourusername 50), or send a screenshot with the package.")
-            return
-        potential_url, package = parts[0], parts[1].lower()
-        # Validate the URL
-        valid_url = False
-        if potential_url.startswith('https://'):
-            if platform == 'instagram' and 'instagram.com' in potential_url:
-                valid_url = True
-            elif platform == 'facebook' and 'facebook.com' in potential_url:
-                valid_url = True
-            elif platform == 'tiktok' and 'tiktok.com' in potential_url:
-                valid_url = True
-            elif platform == 'twitter' and 'twitter.com' in potential_url:
-                valid_url = True
-        if valid_url:
-            profile_url = potential_url
+        if update.message.text:
+            parts = update.message.text.split()
+            if len(parts) < 2:
+                await update.message.reply_text("Please provide the URL and package (e.g., https://instagram.com/yourusername 50), or send a screenshot with the package.")
+                return
+            potential_url, package = parts[0], parts[1].lower()
+            valid_url = False
+            if potential_url.startswith('https://'):
+                if platform == 'instagram' and 'instagram.com' in potential_url:
+                    valid_url = True
+                elif platform == 'facebook' and 'facebook.com' in potential_url:
+                    valid_url = True
+                elif platform == 'tiktok' and 'tiktok.com' in potential_url:
+                    valid_url = True
+                elif platform == 'twitter' and 'twitter.com' in potential_url:
+                    valid_url = True
+            if valid_url:
+                profile_url = potential_url
+            else:
+                await update.message.reply_text(f"Please provide a valid {platform.capitalize()} URL (e.g., https://{platform}.com/yourusername).")
+                return
+
+        elif update.message.photo and update.message.caption:
+            parts = update.message.caption.lower().split()
+            if len(parts) < 2 or parts[0] != 'package':
+                await update.message.reply_text("Please include the package in the caption (e.g., `package 50`).")
+                return
+            package = parts[1]
+            profile_image_id = update.message.photo[-1].file_id
+
         else:
-            await update.message.reply_text(f"Please provide a valid {platform.capitalize()} URL (e.g., https://{platform}.com/yourusername).")
+            await update.message.reply_text("Please provide the URL and package, or send a screenshot with the package in the caption.")
             return
 
-    # Check if the user sent an image and package
-    elif update.message.photo and update.message.caption:
-        parts = update.message.caption.lower().split()
-        if len(parts) < 2 or parts[0] != 'package':
-            await update.message.reply_text("Please include the package in the caption (e.g., `package 50`).")
+        if package not in package_limits[order_type][platform]:
+            await update.message.reply_text(f"Invalid package! Options: {', '.join(list(package_limits[order_type][platform].keys()))}")
             return
-        package = parts[1]
-        profile_image_id = update.message.photo[-1].file_id
 
-    else:
-        await update.message.reply_text("Please provide the URL and package, or send a screenshot with the package in the caption.")
-        return
+        handle = None
+        if profile_url:
+            try:
+                handle = profile_url.split('/')[-1] if profile_url.split('/')[-1] else profile_url.split('/')[-2]
+                if platform == 'tiktok' and handle.startswith('@'):
+                    handle = handle[1:]
+            except:
+                await update.message.reply_text("Could not extract username from the URL. Please ensure the URL is correct.")
+                return
+        else:
+            handle = "Provided via image"
 
-    # Validate the package
-    if package not in package_limits[order_type][platform]:
-        await update.message.reply_text(f"Invalid package! Options: {', '.join(list(package_limits[order_type][platform].keys()))}")
-        return
-
-    # Extract handle from URL if provided
-    handle = None
-    if profile_url:
-        # Extract the username from the URL
-        try:
-            handle = profile_url.split('/')[-1] if profile_url.split('/')[-1] else profile_url.split('/')[-2]
-            if platform == 'tiktok' and handle.startswith('@'):
-                handle = handle[1:]  # Remove the '@' for TikTok
-        except:
-            await update.message.reply_text("Could not extract username from the URL. Please ensure the URL is correct.")
+        order_id = f"{user_id}_{int(time.time())}"
+        if order_type == 'bundle':
+            amount = package_limits['bundle'][platform][package]['price']
+            order_details = {
+                'client_id': int(user_id),
+                'order_id': order_id,
+                'handle': handle,
+                'platform': platform,
+                'profile_url': profile_url,
+                'profile_image_id': profile_image_id,
+                'follows_left': package_limits['bundle'][platform][package]['follows'],
+                'likes_left': package_limits['bundle'][platform][package]['likes'],
+                'comments_left': package_limits['bundle'][platform][package]['comments'],
+                'use_recent_posts': True,
+                'priority': False
+            }
+        else:
+            amount = pricing[order_type][platform][package]
+            order_details = {
+                'client_id': int(user_id),
+                'order_id': order_id,
+                'handle': handle,
+                'platform': platform,
+                'profile_url': profile_url,
+                'profile_image_id': profile_image_id,
+                'follows_left': package_limits[order_type][platform][package] if order_type == 'followers' else 0,
+                'likes_left': package_limits[order_type][platform][package] if order_type == 'likes' else 0,
+                'comments_left': package_limits[order_type][platform][package] if order_type == 'comments' else 0,
+                'use_recent_posts': True,
+                'priority': False
+            }
+        users['clients'][user_id]['step'] = 'awaiting_payment'
+        users['clients'][user_id]['amount'] = amount
+        users['clients'][user_id]['order_id'] = order_id
+        users['clients'][user_id]['order_details'] = order_details
+        summary_message = (
+            f"Order Summary:\n"
+            f"Handle: {handle}\n"
+            f"Platform: {platform}\n"
+            f"Package: {package}\n"
+            f"Amount: ₦{amount}\n"
+        )
+        if profile_url:
+            summary_message += f"Profile URL: {profile_url}\n"
+        summary_message += "Use /pay to proceed with payment."
+        if profile_image_id:
+            await update.message.reply_photo(
+                photo=profile_image_id,
+                caption=summary_message
+            )
+        else:
+            await update.message.reply_text(summary_message)
+        admin_message = (
+            f"New order from {user_id} (ID: {order_id}):\n"
+            f"Handle: {handle}\n"
+            f"Platform: {platform}\n"
+            f"Package: {package}\n"
+            f"Amount: ₦{amount}\n"
+        )
+        if profile_url:
+            admin_message += f"Profile URL: {profile_url}\n"
+        if profile_image_id:
+            await application.bot.send_photo(
+                chat_id=ADMIN_GROUP_ID,
+                photo=profile_image_id,
+                caption=admin_message
+            )
+        else:
+            await application.bot.send_message(
+                chat_id=ADMIN_GROUP_ID,
+                text=admin_message
+            )
+        save_users()
+    elif user_id in users['clients'] and users['clients'][user_id]['step'] == 'awaiting_payment' and text == 'proof':
+        if not update.message.photo:
+            await update.message.reply_text("Please send a screenshot of your payment proof.")
             return
-    else:
-        handle = "Provided via image"
-
-    # Create the order
-    order_id = f"{user_id}_{int(time.time())}"
-    if order_type == 'bundle':
-        amount = package_limits['bundle'][platform][package]['price']
-        order_details = {
+        photo_id = update.message.photo[-1].file_id
+        order_id = users['clients'][user_id]['order_id']
+        order_details = users['clients'][user_id]['order_details']
+        users['pending_payments'][order_id] = {
             'client_id': int(user_id),
             'order_id': order_id,
-            'handle': handle,
-            'platform': platform,
-            'profile_url': profile_url,
-            'profile_image_id': profile_image_id,
-            'follows_left': package_limits['bundle'][platform][package]['follows'],
-            'likes_left': package_limits['bundle'][platform][package]['likes'],
-            'comments_left': package_limits['bundle'][platform][package]['comments'],
-            'use_recent_posts': True,
-            'priority': False
-        }
-    else:
-        amount = pricing[order_type][platform][package]
-        order_details = {
-            'client_id': int(user_id),
-            'order_id': order_id,
-            'handle': handle,
-            'platform': platform,
-            'profile_url': profile_url,
-            'profile_image_id': profile_image_id,
-            'follows_left': package_limits[order_type][platform][package] if order_type == 'followers' else 0,
-            'likes_left': package_limits[order_type][platform][package] if order_type == 'likes' else 0,
-            'comments_left': package_limits[order_type][platform][package] if order_type == 'comments' else 0,
-            'use_recent_posts': True,
-            'priority': False
-        }
-    users['clients'][user_id]['step'] = 'awaiting_payment'
-    users['clients'][user_id]['amount'] = amount
-    users['clients'][user_id]['order_id'] = order_id
-    users['clients'][user_id]['order_details'] = order_details
-    summary_message = (
-        f"Order Summary:\n"
-        f"Handle: {handle}\n"
-        f"Platform: {platform}\n"
-        f"Package: {package}\n"
-        f"Amount: ₦{amount}\n"
-    )
-    if profile_url:
-        summary_message += f"Profile URL: {profile_url}\n"
-    summary_message += "Use /pay to proceed with payment."
-    if profile_image_id:
-        await update.message.reply_photo(
-            photo=profile_image_id,
-            caption=summary_message
-        )
-    else:
-        await update.message.reply_text(summary_message)
-    # Notify admin
-    admin_message = (
-        f"New order from {user_id} (ID: {order_id}):\n"
-        f"Handle: {handle}\n"
-        f"Platform: {platform}\n"
-        f"Package: {package}\n"
-        f"Amount: ₦{amount}\n"
-    )
-    if profile_url:
-        admin_message += f"Profile URL: {profile_url}\n"
-    if profile_image_id:
-        await application.bot.send_photo(
-            chat_id=ADMIN_GROUP_ID,
-            photo=profile_image_id,
-            caption=admin_message
-        )
-    else:
-        await application.bot.send_message(
-            chat_id=ADMIN_GROUP_ID,
-            text=admin_message
-        )
-    save_users()
-elif user_id in users['clients'] and users['clients'][user_id]['step'] == 'awaiting_payment' and text == 'proof':
-    if not update.message.photo:
-        await update.message.reply_text("Please send a screenshot of your payment proof.")
-        return
-    photo_id = update.message.photo[-1].file_id
-    order_id = users['clients'][user_id]['order_id']
-    order_details = users['clients'][user_id]['order_details']
-    users['pending_payments'][order_id] = {
-        'client_id': int(user_id),
-        'order_id': order_id,
-        'photo_id': photo_id,
-        'order_details': order_details,
-        'timestamp': time.time()
-    }
-    await update.message.reply_text("Payment proof submitted! Awaiting admin approval.")
-    await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"New payment proof from {user_id} for order {order_id}. Check /admin.")
-    save_users()
-elif user_id in users['engagers'] and users['engagers'][user_id].get('awaiting_payout', False):
-        account_number = text
-        if not (account_number.isdigit() and len(account_number) == 10):
-            await update.message.reply_text("Please provide a valid 10-digit OPay account number.")
-            return
-        amount = users['engagers'][user_id]['earnings'] + users['engagers'][user_id]['signup_bonus']
-        payout_id = f"{user_id}_{int(time.time())}"
-        users['pending_payouts'][payout_id] = {
-            'engager_id': user_id,
-            'amount': amount,
-            'account': account_number,
+            'photo_id': photo_id,
+            'order_details': order_details,
             'timestamp': time.time()
         }
-        users['engagers'][user_id]['awaiting_payout'] = False
-        await update.message.reply_text(f"Withdrawal request for ₦{amount} to {account_number} submitted! Awaiting admin approval.")
-        await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"New withdrawal request from {user_id}: ₦{amount} to {account_number}. Check /admin.")
+        await update.message.reply_text("Payment proof submitted! Awaiting admin approval.")
+        await application.bot.send_message(chat_id=ADMIN_GROUP_ID, text=f"New payment proof from {user_id} for order {order_id}. Check /admin.")
         save_users()
-elif any(timer_key in users['engagers'].get(user_id, {}).get('task_timers', {}) for timer_key in users['engagers'].get(user_id, {}).get('task_timers', {})):
-          account_number = text
+    elif user_id in users['engagers'] and users['engagers'][user_id].get('awaiting_payout', False):
+        account_number = text
+        if not (account_number.isdigit() and len(account_number) == 10):
+            await IRRupdate.message.reply_text("Please provide a valid 10-digit OPay account number.")
+            return
         amount = users['engagers'][user_id]['earnings'] + users['engagers'][user_id]['signup_bonus']
         payout_id = f"{user_id}_{int(time.time())}"
         users['pending_payouts'][payout_id] = {
@@ -1585,16 +1563,13 @@ elif any(timer_key in users['engagers'].get(user_id, {}).get('task_timers', {}) 
                 await update.message.reply_text(f"Spend at least 60 seconds on the task! You've spent {int(time_spent)} seconds.")
                 return
             del users['engagers'][user_id]['task_timers'][timer_key]
-            # Calculate reward based on task type
             reward_ranges = {
-                'f': (20, 50),  # Follow: ₦20-50
-                'l': (10, 30),  # Like: ₦10-30
-                'c': (30, 50)   # Comment: ₦30-50
+                'f': (20, 50),
+                'l': (10, 30),
+                'c': (30, 50)
             }
             min_reward, max_reward = reward_ranges[task_type]
             amount = random.randint(min_reward, max_reward)
-            
-            # Update the order's remaining tasks
             order = users['active_orders'][order_id]
             if task_type == 'f':
                 order['follows_left'] = max(0, order.get('follows_left', 0) - 1)
@@ -1602,8 +1577,6 @@ elif any(timer_key in users['engagers'].get(user_id, {}).get('task_timers', {}) 
                 order['likes_left'] = max(0, order.get('likes_left', 0) - 1)
             elif task_type == 'c':
                 order['comments_left'] = max(0, order.get('comments_left', 0) - 1)
-            
-            # Check if the order is complete
             if (order.get('follows_left', 0) == 0 and 
                 order.get('likes_left', 0) == 0 and 
                 order.get('comments_left', 0) == 0):
@@ -1619,8 +1592,6 @@ elif any(timer_key in users['engagers'].get(user_id, {}).get('task_timers', {}) 
                     chat_id=ADMIN_GROUP_ID,
                     text=f"Order {order_id} for client {client_id} is complete!"
                 )
-            
-            # Update engager's earnings and claims
             if 'claims' not in users['engagers'][user_id]:
                 users['engagers'][user_id]['claims'] = []
             users['engagers'][user_id]['claims'].append({
@@ -1631,38 +1602,38 @@ elif any(timer_key in users['engagers'].get(user_id, {}).get('task_timers', {}) 
                 'status': 'pending',
                 'timestamp': time.time()
             })
-            # Temporarily add earnings (pending admin approval)
             users['engagers'][user_id]['earnings'] = users['engagers'][user_id].get('earnings', 0) + amount
-            
-            # Notify admin for verification
-            # Notify admin for verification
-task_name = {'f': 'Follow', 'l': 'Like', 'c': 'Comment'}[task_type]
-order = users['active_orders'][order_id]
-admin_caption = (
-    f"New {task_name} task completion by {user_id} for order {order_id}. Reward: ₦{amount}.\n"
-    f"Handle: {order['handle']}\n"
-    f"Platform: {order['platform']}\n"
-)
-if order.get('profile_url'):
-    admin_caption += f"Profile URL: {order['profile_url']}\n"
-admin_caption += "Approve or audit in /admin."
-if order.get('profile_image_id'):
-    await application.bot.send_photo(
-        chat_id=ADMIN_GROUP_ID,
-        photo=order['profile_image_id'],
-        caption=admin_caption
-    )
-    await application.bot.send_photo(
-        chat_id=ADMIN_GROUP_ID,
-        photo=photo_id,
-        caption=f"Screenshot of {task_name} task completion by {user_id} for order {order_id}."
-    )
-else:
-    await application.bot.send_photo(
-        chat_id=ADMIN_GROUP_ID,
-        photo=photo_id,
-        caption=admin_caption
-    )
+            task_name = {'f': 'Follow', 'l': 'Like', 'c': 'Comment'}[task_type]
+            order = users['active_orders'][order_id]
+            admin_caption = (
+                f"New {task_name} task completion by {user_id} for order {order_id}. Reward: ₦{amount}.\n"
+                f"Handle: {order['handle']}\n"
+                f"Platform: {order['platform']}\n"
+            )
+            if order.get('profile_url'):
+                admin_caption += f"Profile URL: {order['profile_url']}\n"
+            admin_caption += "Approve or audit in /admin."
+            if order.get('profile_image_id'):
+                await application.bot.send_photo(
+                    chat_id=ADMIN_GROUP_ID,
+                    photo=order['profile_image_id'],
+                    caption=admin_caption
+                )
+                await application.bot.send_photo(
+                    chat_id=ADMIN_GROUP_ID,
+                    photo=photo_id,
+                    caption=f"Screenshot of {task_name} task completion by {user_id} for order {order_id}."
+                )
+            else:
+                await application.bot.send_photo(
+                    chat_id=ADMIN_GROUP_ID,
+                    photo=photo_id,
+                    caption=admin_caption
+                )
+            await update.message.reply_text(
+                f"Task submitted! You’ve earned ₦{amount} (pending approval). Check /balance."
+            )
+            save_users()
     else:
         await update.message.reply_text("I didn't understand that. Use a command like /start, /client, or /engager to get started!")
 
