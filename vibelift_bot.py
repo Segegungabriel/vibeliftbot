@@ -1637,7 +1637,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("I didn't understand that. Use a command like /start, /client, or /engager to get started!")
 
-        async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if user_id not in users['engagers']:
         await update.message.reply_text("Join as an engager first with /engager!")
