@@ -233,6 +233,65 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Need more help? Contact support in the admin group!"
     )
 
+async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.effective_user.id)
+    
+    # Determine how to reply based on whether this is a CallbackQuery or a Message
+    if update.callback_query:
+        message = update.callback_query.message
+    else:
+        message = update.message
+
+    # Rate limit check
+    if not check_rate_limit(user_id, action='tasks'):
+        await message.reply_text("Hang on a sec and try again!")
+        return
+
+    # Check if user is an engager
+    if user_id not in users['engagers']:
+        keyboard = [[InlineKeyboardButton("Join as Engager", callback_data='engager')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await message.reply_text("You need to join as an engager to view tasks!", reply_markup=reply_markup)
+        return
+
+    # Check daily task limit
+    user_data = users['engagers'][user_id]
+    daily_tasks = user_data.get('daily_tasks', {'count': 0, 'last_reset': time.time()})
+    current_time = time.time()
+    if current_time - daily_tasks['last_reset'] > 24 * 60 * 60:  # Reset after 24 hours
+        daily_tasks['count'] = 0
+        daily_tasks['last_reset'] = current_time
+        user_data['daily_tasks'] = daily_tasks
+        save_users()
+
+    if daily_tasks['count'] >= 10:  # Example: 10 tasks per day limit
+        await message.reply_text("You’ve reached your daily task limit! Try again tomorrow.")
+        return
+
+    # Get available tasks
+    available_tasks = []
+    for order_id, order in users['active_orders'].items():
+        platform = order['platform']
+        handle = order['handle']
+        if order.get('follows_left', 0) > 0:
+            available_tasks.append((order_id, 'f', f"Follow {handle} on {platform} (₦20-50)"))
+        if order.get('likes_left', 0) > 0:
+            available_tasks.append((order_id, 'l', f"Like posts by {handle} on {platform} (₦10-30)"))
+        if order.get('comments_left', 0) > 0:
+            available_tasks.append((order_id, 'c', f"Comment on posts by {handle} on {platform} (₦30-50)"))
+
+    # Display tasks
+    if not available_tasks:
+        await message.reply_text("No tasks available right now. Check back later!")
+        return
+
+    keyboard = []
+    for order_id, task_type, task_text in available_tasks:
+        callback_data = f"task_{task_type}_{order_id}"
+        keyboard.append([InlineKeyboardButton(task_text, callback_data=callback_data)])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await message.reply_text("Available Tasks:", reply_markup=reply_markup)
+    
 # Pay command
 @app.route('/payment-success', methods=['GET'])
 async def payment_success():
