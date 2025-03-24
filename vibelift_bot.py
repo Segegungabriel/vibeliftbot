@@ -1344,9 +1344,15 @@ def main():
     application.run_webhook(
         listen="0.0.0.0",
         port=port,
-        url_path=f"/{BOT_TOKEN}",
-        webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}"
+        url_path="webhook",
+        webhook_url=WEBHOOK_URL
     )
-
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    update = request.get_json()
+    if update:
+        application.process_update(Update.de_json(update, application.bot))
+    return "OK", 200
+    
 if __name__ == '__main__':
     main()
