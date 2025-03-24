@@ -3,9 +3,11 @@ import time
 import logging
 import importlib
 import sys
+import requests  # Add this import for making HTTP requests
 from typing import Dict, Any
-from pymongo import MongoClient  # For MongoDB connection
-from flask import Flask  # Add this import for Flask
+from pymongo import MongoClient
+from flask import Flask
+from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, CallbackQuery
 from telegram.ext import (
     Application,
