@@ -625,42 +625,6 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Your order (ID: {order_id}) is complete! Start a new order with /client."
             )
 
-# Tasks command
-async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    if user_id not in users['engagers']:
-        await update.message.reply_text("Join as an engager first with /engager!")
-        return
-    if not check_rate_limit(user_id, action='tasks'):
-        await update.message.reply_text("Hang on a sec and try again!")
-        return
-    if not users['active_orders']:
-        await update.message.reply_text("No tasks available right now. Check back later!")
-        return
-    message = "Available Tasks:\n"
-    keyboard = []
-    for order_id, order in sorted(users['active_orders'].items(), key=lambda x: x[1].get('priority', False), reverse=True):
-        platform = order.get('platform', 'unknown')
-        handle = order.get('handle', 'unknown')
-        follows_left = order.get('follows_left', 0)
-        likes_left = order.get('likes_left', 0)
-        comments_left = order.get('comments_left', 0)
-        priority = order.get('priority', False)
-        if follows_left > 0:
-            message += f"\n- Follow {handle} on {platform}: ₦20-50 {'(Priority)' if priority else ''}\n"
-            keyboard.append([InlineKeyboardButton(f"Follow: {handle}", callback_data=f'task_f_{order_id}')])
-        if likes_left > 0:
-            message += f"\n- Like post by {handle} on {platform}: ₦10-30 {'(Priority)' if priority else ''}\n"
-            keyboard.append([InlineKeyboardButton(f"Like: {handle}", callback_data=f'task_l_{order_id}')])
-        if comments_left > 0:
-            message += f"\n- Comment on post by {handle} on {platform}: ₦30-50 {'(Priority)' if priority else ''}\n"
-            keyboard.append([InlineKeyboardButton(f"Comment: {handle}", callback_data=f'task_c_{order_id}')])
-    if not keyboard:
-        await update.message.reply_text("No tasks available for these orders (all tasks completed).")
-        return
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(message, reply_markup=reply_markup)
-
 # Balance command
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -737,7 +701,6 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
-# Admin view tasks
 # Admin view tasks
 async def admin_view_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.callback_query.from_user.id)
@@ -1672,7 +1635,7 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(message, reply_markup=reply_markup)
 
-    async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if user_id not in users['engagers']:
         await update.message.reply_text("Join as an engager first with /engager!")
@@ -1692,7 +1655,7 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message += "You can withdraw now! Use /withdraw."
     await update.message.reply_text(message)
 
-    async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if user_id not in users['engagers']:
         await update.message.reply_text("Join as an engager first with /engager!")
@@ -1717,7 +1680,7 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Reply with your 10-digit OPay account number to withdraw.")
     save_users()
 
-    async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     chat_id = update.effective_chat.id
     logger.info(f"Admin command used by user {user_id} in chat {chat_id}, expected ADMIN_GROUP_ID: {ADMIN_GROUP_ID}")
@@ -1745,7 +1708,7 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
-    # Global application variable
+# Global application variable
 application = None
 
 def main():
