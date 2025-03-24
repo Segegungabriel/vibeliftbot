@@ -1341,12 +1341,23 @@ def main():
     # Use the port from Render's environment variable, default to 8443 if not set
     port = int(os.getenv("PORT", 8443))
     logger.info(f"Setting webhook to {WEBHOOK_URL} on port {port}")
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path="webhook",
-        webhook_url=WEBHOOK_URL
-    )
+    try:
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path="webhook",
+            webhook_url=WEBHOOK_URL
+        )
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {e}")
+        raise
+        
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return "Service is running", 200
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     update = request.get_json()
@@ -1354,9 +1365,10 @@ def webhook():
         application.process_update(Update.de_json(update, application.bot))
     return "OK", 200
 
-@app.route('/')
-def health_check():
-    return "Service is running", 200
-    
+# Call main() directly so it runs when the module is imported by Gunicorn
+main()
+
 if __name__ == '__main__':
-    main()
+    # This block is only for running the script directly (e.g., for local testing)
+    # Since we're using Gunicorn, this won't be executed in production
+    pass
