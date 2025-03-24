@@ -1117,8 +1117,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'twitter': {'5': 600, '10': 1200, '50': 6000}
         }
     }
-
-    if user_id in users['clients'] and users['clients'][user_id]['step'] == 'awaiting_order':
+if user_id in users['clients'] and users['clients'][user_id]['step'] == 'awaiting_order':
     platform = users['clients'][user_id]['platform']
     order_type = users['clients'][user_id]['order_type']
     package = None
