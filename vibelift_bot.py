@@ -1349,7 +1349,4 @@ def main():
     )
 
 if __name__ == '__main__':
-    port = int(os.getenv("PORT", 8443))
-    flask_thread = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=port))
-    flask_thread.start()
     main()
