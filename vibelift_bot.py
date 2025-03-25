@@ -135,6 +135,59 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error(f"Error in /start for user {user_id}: {str(e)}")
         await update.message.reply_text("An error occurred. Please try again or contact support.")
 
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.effective_user.id)
+    logger.info(f"Received /cancel command from user {user_id}")
+
+    if not check_rate_limit(user_id, action='cancel'):
+        logger.info(f"User {user_id} is rate-limited for /cancel")
+        await update.message.reply_text("Please wait a moment before trying again!")
+        return
+
+    try:
+        # Check if the user is a client with an active order
+        if user_id in users['clients']:
+            client_data = users['clients'][user_id]
+            order_id = client_data.get('order_id')
+            
+            # Remove the order from pending_payments if it exists
+            if order_id and order_id in users.get('pending_payments', {}):
+                del users['pending_payments'][order_id]
+            
+            # Remove the order from active_orders if it exists
+            if order_id and order_id in users.get('active_orders', {}):
+                del users['active_orders'][order_id]
+            
+            # Remove the user from clients
+            del users['clients'][user_id]
+            await save_users()
+            
+            await update.message.reply_text(
+                "Your order has been canceled. Start a new order with /client if you’d like!"
+            )
+            logger.info(f"User {user_id} canceled their order")
+            return
+
+        # Check if the user is an engager with active tasks
+        if user_id in users.get('engagers', {}):
+            engager_data = users['engagers'][user_id]
+            if 'task_timers' in engager_data and engager_data['task_timers']:
+                engager_data['task_timers'] = {}
+                await save_users()
+                await update.message.reply_text(
+                    "Your active tasks have been canceled. Find new tasks with /tasks!"
+                )
+                logger.info(f"User {user_id} canceled their active tasks")
+                return
+
+        # If no active order or tasks, inform the user
+        await update.message.reply_text(
+            "You don’t have any active orders or tasks to cancel."
+        )
+    except Exception as e:
+        logger.error(f"Error in /cancel for user {user_id}: {str(e)}")
+        await update.message.reply_text("An error occurred while canceling your order. Please try again or contact support.")
+
 async def client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     logger.info(f"Received /client command from user {user_id}")
@@ -2000,6 +2053,7 @@ async def main():
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.PHOTO, handle_message))
+    application.add_error_handler(error_handler)
 
     # Load users
     try:
