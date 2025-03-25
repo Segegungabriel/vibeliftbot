@@ -13,7 +13,7 @@ import time
 import asyncio
 from flask import Flask, request, jsonify
 import uvicorn
-from python_telegram_bot_django.wsgi import WsgiToAsgi
+from asgiref.wsgi import WsgiToAsgi  # Correct import
 from pymongo import MongoClient
 
 # Load environment variables
