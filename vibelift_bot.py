@@ -1,23 +1,20 @@
-import os
-import time
-import logging
-import requests
-import asyncio
-import uvicorn
-from typing import Dict, Any
-from motor.motor_asyncio import AsyncIOMotorClient  # Use async MongoDB
-from flask import Flask, jsonify, request, send_file
-from dotenv import load_dotenv
-from asgiref.wsgi import WsgiToAsgi  # Add this import
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, CallbackQuery  # Add CallbackQuery
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
-    MessageHandler,
     CallbackQueryHandler,
+    MessageHandler,
     filters,
     ContextTypes,
 )
+import logging
+import os
+import time
+import asyncio
+from flask import Flask, request, jsonify
+import uvicorn
+from python_telegram_bot_django.wsgi import WsgiToAsgi
+from pymongo import MongoClient
 
 # Load environment variables
 load_dotenv()
@@ -198,6 +195,48 @@ async def client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logger.error(f"Error in /client for user {user_id}: {str(e)}")
         await message.reply_text("An error occurred while starting your order. Please try again or contact support.")
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.effective_user.id)
+    logger.info(f"Received /cancel command from user {user_id}")
+
+    if not check_rate_limit(user_id, action='cancel'):
+        logger.info(f"User {user_id} is rate-limited for /cancel")
+        await update.message.reply_text("Hang on a sec and try again!")
+        return
+
+    try:
+        # Check if the user is a client
+        if user_id in users['clients']:
+            client_data = users['clients'][user_id]
+            if client_data['step'] in ['select_platform', 'awaiting_order', 'awaiting_payment']:
+                # If the user has a pending payment, remove it
+                if client_data['step'] == 'awaiting_payment' and 'order_id' in client_data:
+                    order_id = client_data['order_id']
+                    if order_id in users.get('pending_payments', {}):
+                        del users['pending_payments'][order_id]
+                        logger.info(f"Removed pending payment {order_id} for user {user_id}")
+            
+            # Remove the user from clients
+            del users['clients'][user_id]
+            await save_users()
+            logger.info(f"User {user_id} canceled their client order")
+            await update.message.reply_text("Your order has been canceled. Start a new order with /client!")
+            return
+
+        # Check if the user is an engager with a pending payout
+        if user_id in users['engagers'] and users['engagers'][user_id].get('awaiting_payout', False):
+            users['engagers'][user_id]['awaiting_payout'] = False
+            await save_users()
+            logger.info(f"User {user_id} canceled their payout request")
+            await update.message.reply_text("Your payout request has been canceled. Use /withdraw to start a new request.")
+            return
+
+        # If the user has no active order or payout to cancel
+        logger.info(f"User {user_id} has nothing to cancel")
+        await update.message.reply_text("You don’t have an active order or payout to cancel.")
+    except Exception as e:
+        logger.error(f"Error in /cancel for user {user_id}: {str(e)}")
+        await update.message.reply_text("An error occurred while canceling. Please try again or contact support.")
 
 async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
@@ -1912,7 +1951,7 @@ async def main():
     application.add_handler(CommandHandler("balance", balance))
     application.add_handler(CommandHandler("withdraw", withdraw))
     application.add_handler(CommandHandler("admin", admin))
-    application.add_handler(CommandHandler("cancel", cancel))
+    application.add_handler(CommandHandler("cancel", cancel))  # Now references the defined cancel function
     application.add_handler(CommandHandler("order", order))
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
