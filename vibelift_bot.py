@@ -15,7 +15,8 @@ from flask import Flask, request, jsonify
 import uvicorn
 from asgiref.wsgi import WsgiToAsgi
 from pymongo import MongoClient
-from dotenv import load_dotenv  # Add this import
+from motor.motor_asyncio import AsyncIOMotorClient  # Add this import
+from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
