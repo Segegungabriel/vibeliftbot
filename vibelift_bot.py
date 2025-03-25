@@ -311,11 +311,6 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await message.reply_text("Available Tasks:", reply_markup=reply_markup)
 
 # Pay command
-@app.route('/paystack-webhook', methods=['POST'])
-async def paystack_webhook():
-    logger.info(f"Paystack webhook received: {request.get_json()}")
-    return "OK", 200
-
 @app.route('/payment-success', methods=['GET'])
 def payment_success():
     order_id = request.args.get('order_id')
@@ -1532,6 +1527,13 @@ def start_update_processing():
     loop = asyncio.get_event_loop()
     loop.create_task(process_updates())
 
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    import asyncio
+    asyncio.run(application.update_queue.put(update))
+    return "OK", 200
+
 # Main function
 # Define application as a global variable
 application = None
@@ -1568,12 +1570,6 @@ def main():
 
     # Start Flask app
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8443)))
-
-# Call main() to initialize application
-main()
-
-# Define Flask app and routes after main() is called
-app = Flask(__name__)
 
 @app.route('/')
 def health_check():
