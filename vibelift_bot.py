@@ -1527,10 +1527,23 @@ async def process_updates():
         except Exception as e:
             logger.error(f"Error processing update: {str(e)}")
 
+import threading
+
 def start_update_processing():
     import asyncio
-    loop = asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    # Start the update processing task
     loop.create_task(process_updates())
+    
+    # Run the event loop in a separate thread
+    def run_loop():
+        loop.run_forever()
+    
+    thread = threading.Thread(target=run_loop, daemon=True)
+    thread.start()
+    logger.info("Started update processing thread")
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -1570,6 +1583,12 @@ def main():
     logger.info("Starting bot...")
     application = Application.builder().token(BOT_TOKEN).build()
 
+    # Initialize the application
+    import asyncio
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(application.initialize())
+    logger.info("Application initialized")
+
     # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("client", client))
@@ -1585,10 +1604,8 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.PHOTO, handle_message))
 
-    # Set Telegram webhook (make it synchronous for Flask compatibility)
+    # Set Telegram webhook
     webhook_url = "https://vibeliftbot.onrender.com/webhook"
-    import asyncio
-    loop = asyncio.get_event_loop()
     loop.run_until_complete(application.bot.set_webhook(webhook_url))
     logger.info(f"Webhook set to {webhook_url}")
 
