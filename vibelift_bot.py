@@ -50,9 +50,15 @@ MONGODB_URI = os.getenv("MONGODB_URI")
 if not MONGODB_URI:
     raise ValueError("MONGODB_URI environment variable not set. Please set it in your environment or Render dashboard.")
 client = MongoClient(MONGODB_URI)
+try:
+    client.admin.command('ping')
+    logger.info("Successfully connected to MongoDB Atlas")
+except Exception as e:
+    logger.error(f"Failed to connect to MongoDB Atlas: {str(e)}")
+    raise
+
 db = client['vibelift_db']
 users_collection = db['users']
-logger.info("Successfully connected to MongoDB Atlas")
 
 # Flask app
 app = Flask(__name__)
@@ -63,32 +69,40 @@ application = None
 # Load users from MongoDB (or initialize if not exists)
 def load_users():
     logger.info("Loading users from MongoDB...")
-    users_doc = users_collection.find_one({"_id": "users"})
-    if users_doc:
-        logger.info(f"Users found in MongoDB: {users_doc}")
-        return users_doc["data"]
-    else:
-        logger.info("No users found, creating default users...")
-        default_users = {
-            'clients': {},
-            'engagers': {},
-            'pending_payments': {},
-            'pending_payouts': {},
-            'active_orders': {},
-            'pending_admin_actions': {}
-        }
-        users_collection.insert_one({"_id": "users", "data": default_users})
-        logger.info("Default users created in MongoDB")
-        return default_users
+    try:
+        users_doc = users_collection.find_one({"_id": "users"})
+        if users_doc:
+            logger.info(f"Users found in MongoDB: {users_doc}")
+            return users_doc["data"]
+        else:
+            logger.info("No users found, creating default users...")
+            default_users = {
+                'clients': {},
+                'engagers': {},
+                'pending_payments': {},
+                'pending_payouts': {},
+                'active_orders': {},
+                'pending_admin_actions': {}
+            }
+            users_collection.insert_one({"_id": "users", "data": default_users})
+            logger.info("Default users created in MongoDB")
+            return default_users
+    except Exception as e:
+        logger.error(f"Error loading users from MongoDB: {str(e)}")
+        raise
 
 def save_users():
     logger.info("Saving users to MongoDB...")
-    users_collection.update_one(
-        {"_id": "users"},
-        {"$set": {"data": users}},
-        upsert=True
-    )
-    logger.info("Users saved to MongoDB")
+    try:
+        users_collection.update_one(
+            {"_id": "users"},
+            {"$set": {"data": users}},
+            upsert=True
+        )
+        logger.info("Users saved to MongoDB")
+    except Exception as e:
+        logger.error(f"Error saving users to MongoDB: {str(e)}")
+        raise
 
 # Initialize users
 users = load_users()
@@ -104,6 +118,7 @@ def check_rate_limit(user_id, is_signup_action=False, action=None):
 
 # Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Received /start command from user {update.effective_user.id}")
     user_id = update.effective_user.id
     user_id_str = str(user_id)
     args = context.args
@@ -134,6 +149,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Boost your social media or earn cash by engaging.\n"
         "Pick your role:", reply_markup=reply_markup
     )
+    logger.info(f"Sent /start response to user {user_id}")
 
 
 # Client command
@@ -1526,7 +1542,7 @@ async def process_updates():
             logger.info(f"Successfully processed update: {update}")
         except Exception as e:
             logger.error(f"Error processing update: {str(e)}")
-
+            
 import threading
 
 def start_update_processing():
@@ -1536,10 +1552,16 @@ def start_update_processing():
     
     # Start the update processing task
     loop.create_task(process_updates())
+    logger.info("Scheduled process_updates task")
     
     # Run the event loop in a separate thread
     def run_loop():
-        loop.run_forever()
+        try:
+            logger.info("Starting event loop in thread")
+            loop.run_forever()
+            logger.info("Event loop stopped")
+        except Exception as e:
+            logger.error(f"Error in event loop thread: {str(e)}")
     
     thread = threading.Thread(target=run_loop, daemon=True)
     thread.start()
@@ -1586,8 +1608,20 @@ def main():
     # Initialize the application
     import asyncio
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(application.initialize())
-    logger.info("Application initialized")
+    try:
+        loop.run_until_complete(application.initialize())
+        logger.info("Application initialized")
+    except Exception as e:
+        logger.error(f"Error initializing application: {str(e)}")
+        raise
+
+    # Start the application
+    try:
+        loop.run_until_complete(application.start())
+        logger.info("Application started")
+    except Exception as e:
+        logger.error(f"Error starting application: {str(e)}")
+        raise
 
     # Add handlers
     application.add_handler(CommandHandler("start", start))
@@ -1611,7 +1645,6 @@ def main():
 
     # Start background update processing
     start_update_processing()
-
     # Start Flask app
 @app.route('/')
 def health_check():
