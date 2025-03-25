@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Successful</title>
+    <script>
+        window.onload = function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const orderId = urlParams.get('order_id') || 'unknown';
+            // Redirect to VibeLiftBot with the order ID
+            window.location.href = `https://t.me/VibeLiftBot?start=payment_success_${orderId}`;
+        };
+    </script>
+</head>
+<body>
+    <h1>Payment Successful!</h1>
+    <p>Your payment has been received.</p>
+    <p>Redirecting you back to VibeLiftBot...</p>
+    <p>If you are not redirected, <a href="https://t.me/VibeLiftBot?start=payment_success">click here</a>.</p>
+</body>
+</html>

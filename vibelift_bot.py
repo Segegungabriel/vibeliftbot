@@ -6,7 +6,7 @@ import sys
 import requests  # Add this import for making HTTP requests
 from typing import Dict, Any
 from pymongo import MongoClient
-from flask import Flask
+from flask import Flask, request, send_file  # Update this line
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, CallbackQuery
 from telegram.ext import (
@@ -105,6 +105,21 @@ def check_rate_limit(user_id, is_signup_action=False, action=None):
 # Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    user_id_str = str(user_id)
+    args = context.args
+
+    if args and args[0].startswith("payment_success_"):
+        order_id = args[0].split("payment_success_")[1]
+        if order_id in users.get("active_orders", {}):
+            await update.message.reply_text(
+                f"🎉 Payment successful! Your order (ID: {order_id}) is now active. Check progress with /status."
+            )
+        else:
+            await update.message.reply_text(
+                "⚠️ Payment confirmation is still processing. Please wait a moment or use /status to check."
+            )
+        return
+
     if not check_rate_limit(user_id, is_signup_action=True):
         await update.message.reply_text("Hang on a sec and try again!")
         return
@@ -119,6 +134,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Boost your social media or earn cash by engaging.\n"
         "Pick your role:", reply_markup=reply_markup
     )
+
 
 # Client command
 async def client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -293,45 +309,117 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         keyboard.append([InlineKeyboardButton(task_text, callback_data=callback_data)])
     reply_markup = InlineKeyboardMarkup(keyboard)
     await message.reply_text("Available Tasks:", reply_markup=reply_markup)
-    
+
 # Pay command
 @app.route('/payment-success', methods=['GET'])
 async def payment_success():
     order_id = request.args.get('order_id')
     if not order_id:
+        logger.error("No order ID provided in payment-success redirect")
         return "Error: No order ID provided", 400
 
     logger.info(f"Payment success redirect received for order_id: {order_id}")
+    
+    # Serve the success.html file
+    return await send_file("static/success.html")
 
-    if order_id in users['pending_payments']:
-        user_id = users['pending_payments'][order_id]['user_id']
-        order_details = users['pending_payments'][order_id]['order_details']
-        order_details['priority'] = False
-        users['active_orders'][order_id] = order_details
-        users['clients'][str(user_id)]['step'] = 'completed'
-        del users['pending_payments'][order_id]
-        save_users()
+@app.route('/payment_callback', methods=['POST'])
+async def payment_callback():
+    global users
+    try:
+        data = request.get_json()
+        logger.info(f"Payment callback received: {data}")
 
-        await application.bot.send_message(
-            chat_id=user_id,
-            text=f"Payment successful! Your order (ID: {order_id}) is now active. Check progress with /status."
-        )
-        await application.bot.send_message(
-            chat_id=ADMIN_GROUP_ID,
-            text=f"Payment success redirect for order {order_id} from user {user_id}."
-        )
-        logger.info(f"Order {order_id} moved to active_orders for user {user_id}")
+        # Paystack-specific fields (adjust if using a different gateway)
+        event = data.get("event")
+        payment_data = data.get("data", {})
+        order_id = payment_data.get("metadata", {}).get("order_id")
+        status = payment_data.get("status")
 
-    return f"""
-    <html>
-        <body>
-            <h1>Payment Successful!</h1>
-            <p>Your payment for order ID {order_id} has been received.</p>
-            <p>Return to Telegram to check your order status using /status.</p>
-            <a href="https://t.me/VibeLiftBot">Go back to VibeLiftBot</a>
-        </body>
-    </html>
+        if not order_id or not status:
+            logger.error("Invalid callback data: missing order_id or status")
+            return "Invalid data", 400
+
+        # Find the user associated with this order
+        user_id = None
+        for uid, payment in users.get("pending_payments", {}).items():
+            if payment.get("order_id") == order_id:
+                user_id = uid
+                break
+
+        if not user_id:
+            logger.error(f"No pending payment found for order_id: {order_id}")
+            return "Order not found", 404
+
+        if event == "charge.success" and status == "success":
+            # Move order from pending_payments to active_orders
+            order = users["pending_payments"].pop(user_id)
+            order_details = order["order_details"]
+            order_details["priority"] = False  # Match your original logic
+            users.setdefault("active_orders", {})[order_id] = order_details
+            users["clients"][user_id]["step"] = "completed"
+            save_users()
+
+            # Notify the user
+            await application.bot.send_message(
+                chat_id=user_id,
+                text=f"🎉 Payment successful! Your order (ID: {order_id}) is now active. Check progress with /status."
+            )
+            # Notify admins
+            await application.bot.send_message(
+                chat_id=ADMIN_GROUP_ID,
+                text=f"Payment success for order {order_id} from user {user_id}."
+            )
+            logger.info(f"Order {order_id} moved to active_orders for user {user_id}")
+        else:
+            logger.warning(f"Payment failed for order_id: {order_id}, status: {status}")
+            await application.bot.send_message(
+                chat_id=user_id,
+                text="⚠️ Payment failed. Please try again or contact support."
+            )
+
+        return "OK", 200
+    except Exception as e:
+        logger.error(f"Error in payment callback: {str(e)}")
+        return "Error", 500
+
+async def initiate_payment(user_id: str, amount: int, order_id: str) -> str:
     """
+    Initiates a payment with Paystack and returns the payment URL.
+
+    Args:
+        user_id (str): The Telegram user ID.
+        amount (int): The amount to charge (in NGN, will be converted to kobo).
+        order_id (str): The unique order ID for tracking the payment.
+
+    Returns:
+        str: The payment URL for the user to complete the payment.
+
+    Raises:
+        Exception: If the payment initiation fails.
+    """
+    try:
+        headers = {
+            "Authorization": f"Bearer {os.getenv('PAYMENT_API_KEY')}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "amount": amount * 100,
+            "email": f"{user_id}@vibeliftbot.com",
+            "callback_url": "https://vibeliftbot.onrender.com/payment-success",
+            "metadata": {"order_id": order_id}
+        }
+        response = requests.post("https://api.paystack.co/transaction/initialize", headers=headers, json=data)
+        response.raise_for_status()
+        payment_data = response.json()
+        if not payment_data.get("status"):
+            raise Exception("Payment initiation failed: " + payment_data.get("message", "Unknown error"))
+        payment_url = payment_data["data"]["authorization_url"]
+        logger.info(f"Payment initiated for user {user_id}, order {order_id}: {payment_url}")
+        return payment_url
+    except Exception as e:
+        logger.error(f"Error initiating payment for user {user_id}, order {order_id}: {str(e)}")
+        raise
 
 async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1502,6 +1590,7 @@ def webhook():
     else:
         logger.error("Application is None or update is invalid")
     return "OK", 200
+
 
 # Call main() directly so it runs when the module is imported by Gunicorn
 main()
