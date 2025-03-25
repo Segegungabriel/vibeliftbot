@@ -1920,14 +1920,19 @@ async def main():
 
     # Load users
     users = await load_users()
+    logger.info("Users loaded successfully")
 
-    # Initialize the application (without starting its own loop)
+    # Initialize the application
     await application.initialize()
     logger.info("Application initialized")
 
     # Set the webhook
-    await application.bot.set_webhook(WEBHOOK_URL)
-    logger.info(f"Webhook set to {WEBHOOK_URL}")
+    try:
+        await application.bot.set_webhook(WEBHOOK_URL)
+        logger.info(f"Webhook set to {WEBHOOK_URL}")
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {str(e)}")
+        return
 
     # Wrap Flask app in WsgiToAsgi for ASGI compatibility
     asgi_app = WsgiToAsgi(app)
@@ -1935,13 +1940,20 @@ async def main():
     # Run uvicorn with the ASGI app
     port = int(os.getenv("PORT", 10000))  # Use Render's default port 10000
     config = uvicorn.Config(
-        asgi_app,
+        app=asgi_app,
         host="0.0.0.0",
         port=port,
         log_level="info",
-        loop="asyncio"
+        loop="asyncio",
+        workers=1  # Use a single worker to avoid issues with async
     )
-    logger.info(f"Starting Uvicorn server on port {port}")
+    logger.info(f"Starting Uvicorn server on host 0.0.0.0, port {port}")
     server = uvicorn.Server(config)
-    await server.serve()
-    logger.info("Uvicorn server started")
+    
+    # Start the server and keep it running
+    try:
+        await server.serve()
+        logger.info("Uvicorn server is running")
+    except Exception as e:
+        logger.error(f"Failed to start Uvicorn server: {str(e)}")
+        raise
