@@ -1,14 +1,13 @@
 import os
 import time
 import logging
-import importlib
-import sys
-import requests  # Add this import for making HTTP requests
+import requests
+import asyncio
+import uvicorn
 from typing import Dict, Any
-from pymongo import MongoClient
-from flask import Flask, request, send_file  # Update this line
-from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, CallbackQuery
+from motor.motor_asyncio import AsyncIOMotorClient  # Use async MongoDB client
+from flask import Flask, request, send_file
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -28,11 +27,11 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 logger.info(f"BOT_TOKEN value: {BOT_TOKEN}")
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN environment variable not set. Please set it in your environment or Render dashboard.")
+    raise ValueError("BOT_TOKEN not set.")
 ADMIN_USER_ID = os.getenv("ADMIN_USER_ID")
 ADMIN_GROUP_ID = os.getenv("ADMIN_GROUP_ID")
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_URL = "https://vibeliftbot.onrender.com/webhook"
 WITHDRAWAL_LIMIT = 5000
 
 # Paystack headers
@@ -42,59 +41,49 @@ PAYSTACK_HEADERS = {
 }
 
 # Rate limiting
-RATE_LIMIT = 2  # seconds between commands
+RATE_LIMIT = 2
 user_last_command = {}
 
-# MongoDB setup
+# MongoDB setup (async)
 MONGODB_URI = os.getenv("MONGODB_URI")
 if not MONGODB_URI:
-    raise ValueError("MONGODB_URI environment variable not set. Please set it in your environment or Render dashboard.")
-client = MongoClient(MONGODB_URI)
-try:
-    client.admin.command('ping')
-    logger.info("Successfully connected to MongoDB Atlas")
-except Exception as e:
-    logger.error(f"Failed to connect to MongoDB Atlas: {str(e)}")
-    raise
-
+    raise ValueError("MONGODB_URI not set.")
+client = AsyncIOMotorClient(MONGODB_URI)
 db = client['vibelift_db']
 users_collection = db['users']
 
 # Flask app
 app = Flask(__name__)
 
-# Global application variable
+# Global variables (will be set in main)
 application = None
+users = None
 
-# Load users from MongoDB (or initialize if not exists)
-def load_users():
+# Load users from MongoDB (async)
+async def load_users():
     logger.info("Loading users from MongoDB...")
     try:
-        users_doc = users_collection.find_one({"_id": "users"})
+        users_doc = await users_collection.find_one({"_id": "users"})
         if users_doc:
             logger.info(f"Users found in MongoDB: {users_doc}")
             return users_doc["data"]
         else:
             logger.info("No users found, creating default users...")
             default_users = {
-                'clients': {},
-                'engagers': {},
-                'pending_payments': {},
-                'pending_payouts': {},
-                'active_orders': {},
-                'pending_admin_actions': {}
+                'clients': {}, 'engagers': {}, 'pending_payments': {}, 'pending_payouts': {},
+                'active_orders': {}, 'pending_admin_actions': {}
             }
-            users_collection.insert_one({"_id": "users", "data": default_users})
+            await users_collection.insert_one({"_id": "users", "data": default_users})
             logger.info("Default users created in MongoDB")
             return default_users
     except Exception as e:
         logger.error(f"Error loading users from MongoDB: {str(e)}")
         raise
 
-def save_users():
+async def save_users():
     logger.info("Saving users to MongoDB...")
     try:
-        users_collection.update_one(
+        await users_collection.update_one(
             {"_id": "users"},
             {"$set": {"data": users}},
             upsert=True
@@ -103,9 +92,6 @@ def save_users():
     except Exception as e:
         logger.error(f"Error saving users to MongoDB: {str(e)}")
         raise
-
-# Initialize users
-users = load_users()
 
 # Rate limiting function
 def check_rate_limit(user_id, is_signup_action=False, action=None):
@@ -116,7 +102,7 @@ def check_rate_limit(user_id, is_signup_action=False, action=None):
     user_last_command[user_id] = current_time
     return True
 
-# Start command
+# Command handlers (unchanged except for async consistency)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Received /start command from user {update.effective_user.id}")
     user_id = update.effective_user.id
@@ -151,26 +137,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     logger.info(f"Sent /start response to user {user_id}")
 
-
-# Client command
 async def client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
-    
-    # Determine how to reply based on whether this is a CallbackQuery or a Message
     if update.callback_query:
-        # This is a button click
         message = update.callback_query.message
-        await update.callback_query.answer()  # Acknowledge the button click
+        await update.callback_query.answer()
     else:
-        # This is a command
         message = update.message
 
-    # Rate limit check
     if not check_rate_limit(user_id, action='client'):
         await message.reply_text("Hang on a sec and try again!")
         return
 
-    # Check client status
     if user_id in users['clients']:
         if users['clients'][user_id]['step'] == 'completed':
             await message.reply_text("Your order is active! Results in 4-5 hours for small orders.")
@@ -182,7 +160,6 @@ async def client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await message.reply_text("You’re already a client! Reply with your order or use /pay.")
             return
 
-    # New client: prompt to select platform
     users['clients'][user_id] = {'step': 'select_platform'}
     keyboard = [
         [InlineKeyboardButton("Instagram", callback_data='platform_instagram')],
@@ -194,26 +171,20 @@ async def client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await message.reply_text(
         "Boost your social media! First, select a platform:", reply_markup=reply_markup
     )
-    save_users()
+    await save_users()
 
 async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
-    
-    # Determine how to reply based on whether this is a CallbackQuery or a Message
     if update.callback_query:
-        # This is a button click
         message = update.callback_query.message
-        await update.callback_query.answer()  # Acknowledge the button click
+        await update.callback_query.answer()
     else:
-        # This is a command
         message = update.message
 
-    # Rate limit check
     if not check_rate_limit(user_id, action='engager'):
         await message.reply_text("Hang on a sec and try again!")
         return
 
-    # Check engager status
     if user_id in users['engagers']:
         keyboard = [
             [InlineKeyboardButton("See Tasks", callback_data='tasks')],
@@ -223,7 +194,6 @@ async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await message.reply_text("You’re already an engager! Pick an action:", reply_markup=reply_markup)
         return
 
-    # New engager: prompt to join
     keyboard = [[InlineKeyboardButton("Join Now", callback_data='join')]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await message.reply_text(
@@ -235,22 +205,16 @@ async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    
-    # Determine how to reply based on whether this is a CallbackQuery or a Message
     if update.callback_query:
-        # This is a button click
         message = update.callback_query.message
-        await update.callback_query.answer()  # Acknowledge the button click
+        await update.callback_query.answer()
     else:
-        # This is a command
         message = update.message
 
-    # Rate limit check
     if not check_rate_limit(user_id, action='help'):
         await message.reply_text("Hang on a sec and try again!")
         return
 
-    # Send help message
     await message.reply_text(
         "Welcome to VibeLiftBot! Here’s how to use me:\n\n"
         "👥 For Clients:\n"
@@ -269,40 +233,34 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
-    
-    # Determine how to reply based on whether this is a CallbackQuery or a Message
     if update.callback_query:
         message = update.callback_query.message
     else:
         message = update.message
 
-    # Rate limit check
     if not check_rate_limit(user_id, action='tasks'):
         await message.reply_text("Hang on a sec and try again!")
         return
 
-    # Check if user is an engager
     if user_id not in users['engagers']:
         keyboard = [[InlineKeyboardButton("Join as Engager", callback_data='engager')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await message.reply_text("You need to join as an engager to view tasks!", reply_markup=reply_markup)
         return
 
-    # Check daily task limit
     user_data = users['engagers'][user_id]
     daily_tasks = user_data.get('daily_tasks', {'count': 0, 'last_reset': time.time()})
     current_time = time.time()
-    if current_time - daily_tasks['last_reset'] > 24 * 60 * 60:  # Reset after 24 hours
+    if current_time - daily_tasks['last_reset'] > 24 * 60 * 60:
         daily_tasks['count'] = 0
         daily_tasks['last_reset'] = current_time
         user_data['daily_tasks'] = daily_tasks
-        save_users()
+        await save_users()
 
-    if daily_tasks['count'] >= 10:  # Example: 10 tasks per day limit
+    if daily_tasks['count'] >= 10:
         await message.reply_text("You’ve reached your daily task limit! Try again tomorrow.")
         return
 
-    # Get available tasks
     available_tasks = []
     for order_id, order in users['active_orders'].items():
         platform = order['platform']
@@ -314,7 +272,6 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if order.get('comments_left', 0) > 0:
             available_tasks.append((order_id, 'c', f"Comment on posts by {handle} on {platform} (₦30-50)"))
 
-    # Display tasks
     if not available_tasks:
         await message.reply_text("No tasks available right now. Check back later!")
         return
@@ -326,18 +283,66 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply_markup = InlineKeyboardMarkup(keyboard)
     await message.reply_text("Available Tasks:", reply_markup=reply_markup)
 
-# Pay command
+# Pay command and Flask routes
+async def initiate_payment(user_id: str, amount: int, order_id: str) -> str:
+    try:
+        headers = {
+            "Authorization": f"Bearer {os.getenv('PAYSTACK_SECRET_KEY')}",
+            "Content-Type": "application/json"
+        }
+        data = {
+            "amount": amount * 100,
+            "email": f"{user_id}@vibeliftbot.com",
+            "callback_url": "https://vibeliftbot.onrender.com/payment-success",
+            "metadata": {"order_id": order_id}
+        }
+        response = requests.post("https://api.paystack.co/transaction/initialize", headers=headers, json=data)
+        response.raise_for_status()
+        payment_data = response.json()
+        if not payment_data.get("status"):
+            raise Exception("Payment initiation failed: " + payment_data.get("message", "Unknown error"))
+        payment_url = payment_data["data"]["authorization_url"]
+        logger.info(f"Payment initiated for user {user_id}, order {order_id}: {payment_url}")
+        return payment_url
+    except Exception as e:
+        logger.error(f"Error initiating payment for user {user_id}, order {order_id}: {str(e)}")
+        raise
+
+async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not check_rate_limit(user_id, is_signup_action=True):
+        await update.message.reply_text("Hang on a sec and try again!")
+        return
+    user_id_str = str(user_id)
+    if user_id_str not in users['clients'] or users['clients'][user_id_str]['step'] != 'awaiting_payment':
+        await update.message.reply_text("Start an order first with /client!")
+        return
+    amount = users['clients'][user_id_str]['amount']
+    order_id = users['clients'][user_id_str]['order_id']
+    try:
+        payment_url = await initiate_payment(user_id_str, amount, order_id)
+        keyboard = [
+            [InlineKeyboardButton(f"Pay ₦{amount}", url=payment_url)],
+            [InlineKeyboardButton("Cancel Order", callback_data='cancel')],
+            [InlineKeyboardButton("Back to Start", callback_data='start')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text("Click to pay via Paystack:", reply_markup=reply_markup)
+    except Exception as e:
+        logger.error(f"Error initiating payment: {e}")
+        await update.message.reply_text("Something went wrong. Try again later.")
+
 @app.route('/payment-success', methods=['GET'])
-def payment_success():
+async def payment_success():
     order_id = request.args.get('order_id')
     if not order_id:
         logger.error("No order ID provided in payment-success redirect")
         return "Error: No order ID provided", 400
     logger.info(f"Payment success redirect received for order_id: {order_id}")
-    return send_file("static/success.html")  # Adjusted path since vibelift_bot.py is in src/
+    return send_file("static/success.html")
 
 @app.route('/payment_callback', methods=['POST'])
-def payment_callback():
+async def payment_callback():
     global users
     try:
         data = request.get_json()
@@ -362,25 +367,23 @@ def payment_callback():
             order_details = order["order_details"]
             users.setdefault("active_orders", {})[order_id] = order_details
             users["clients"][user_id]["step"] = "completed"
-            save_users()
+            await save_users()
 
-            import asyncio
-            asyncio.run(application.bot.send_message(
+            await application.bot.send_message(
                 chat_id=user_id,
                 text=f"🎉 Payment successful! Your order (ID: {order_id}) is now active. Check progress with /status."
-            ))
-            asyncio.run(application.bot.send_message(
+            )
+            await application.bot.send_message(
                 chat_id=ADMIN_GROUP_ID,
                 text=f"Payment success for order {order_id} from {user_id}."
-            ))
+            )
             logger.info(f"Order {order_id} moved to active_orders for user {user_id}")
         else:
             logger.warning(f"Payment failed for order_id: {order_id}, status: {status}")
-            import asyncio
-            asyncio.run(application.bot.send_message(
+            await application.bot.send_message(
                 chat_id=user_id,
                 text="⚠️ Payment failed. Please try again with /pay or contact support."
-            ))
+            )
 
         return "OK", 200
     except Exception as e:
@@ -622,7 +625,70 @@ async def admin_view_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.callback_query.message.reply_text(message, reply_markup=reply_markup)
 
-# Admin clear pending
+# Admin command
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    chat_id = update.effective_chat.id
+    logger.info(f"Admin command used by user {user_id} in chat {chat_id}, expected ADMIN_GROUP_ID: {ADMIN_GROUP_ID}")
+    if str(chat_id) != str(ADMIN_GROUP_ID):
+        await update.message.reply_text("This command can only be used in the admin group.")
+        return
+    if user_id != ADMIN_USER_ID:
+        await update.message.reply_text("Admin only!")
+        return
+    keyboard = [
+        [InlineKeyboardButton("📊 View Stats", callback_data='admin_stats')],
+        [InlineKeyboardButton("🔍 Audit Task", callback_data='admin_audit')],
+        [InlineKeyboardButton("💸 View Withdrawals", callback_data='admin_view_withdrawals')],
+        [InlineKeyboardButton("💳 View Pending Payments", callback_data='admin_view_payments')],
+        [InlineKeyboardButton("📋 Pending Actions", callback_data='admin_pending')],
+        [InlineKeyboardButton("🗑️ Clear Pending Tasks", callback_data='admin_clear_pending')],
+        [InlineKeyboardButton("📋 View Active Tasks", callback_data='admin_view_tasks')],
+        [InlineKeyboardButton("🚀 Set Task Priority", callback_data='admin_set_priority')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        f"Admin Panel:\n"
+        f"Withdrawal limit: ₦{WITHDRAWAL_LIMIT} (trial). Edit code to change.\n"
+        f"Pick an action:", 
+        reply_markup=reply_markup
+    )
+
+async def admin_view_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.callback_query.from_user.id)
+    if user_id != ADMIN_USER_ID:
+        await update.callback_query.message.reply_text("Admin only!")
+        return
+    await update.callback_query.answer()
+    if not users['active_orders']:
+        keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.callback_query.message.reply_text("No active tasks!", reply_markup=reply_markup)
+        return
+    for order_id, order in users['active_orders'].items():
+        handle = order.get('handle', 'unknown')
+        platform = order.get('platform', 'unknown')
+        follows_left = order.get('follows_left', 0)
+        likes_left = order.get('likes_left', 0)
+        comments_left = order.get('comments_left', 0)
+        priority = "Priority" if order.get('priority植物', False) else "Normal"
+        message = (
+            f"Order {order_id}: {handle} on {platform}\n"
+            f"Follows: {follows_left}, Likes: {likes_left}, Comments: {comments_left} ({priority})\n"
+        )
+        if order.get('profile_url'):
+            message += f"Profile URL: {order['profile_url']}\n"
+        keyboard = [[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        if order.get('profile_image_id'):
+            await update.callback_query.message.reply_photo(
+                photo=order['profile_image_id'],
+                caption=message,
+                reply_markup=reply_markup
+            )
+        else:
+            await update.callback_query.message.reply_text(message, reply_markup=reply_markup)
+
 async def admin_clear_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.callback_query.from_user.id)
     if user_id != ADMIN_USER_ID:
@@ -668,9 +734,8 @@ async def admin_clear_pending(update: Update, context: ContextTypes.DEFAULT_TYPE
         'action': 'awaiting_clear_task_input',
         'expiration': time.time() + 300
     }
-    save_users()
+    await save_users()
 
-# Admin set priority
 async def admin_set_priority(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.callback_query.from_user.id)
     if user_id != ADMIN_USER_ID:
@@ -702,22 +767,7 @@ async def admin_set_priority(update: Update, context: ContextTypes.DEFAULT_TYPE)
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.callback_query.message.reply_text(message, reply_markup=reply_markup)
 
-# Generate admin code
-async def generate_admin_code(user_id, action, action_data):
-    code = ''.join(random.choices(string.digits, k=6))
-    users['pending_admin_actions'][f"{action}_{user_id}"] = {
-        'user_id': user_id,
-        'action': action,
-        'action_data': action_data,
-        'code': code,
-        'expiration': time.time() + 300
-    }
-    save_users()
-    await application.bot.send_message(chat_id=user_id, text=f"Your 6-digit code for {action}: {code}")
-    return code
-
-# Button handler
-# Helper functions for each button action
+# Button handler (helper functions unchanged except for async save_users)
 async def handle_start_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await start(update, context)
 
@@ -730,7 +780,7 @@ async def handle_engager_button(update: Update, context: ContextTypes.DEFAULT_TY
 async def handle_help_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await help_command(update, context)
 
-async def handle_join_button(query: CallbackQuery, user_id_str: str) -> None:
+async def handle_join_button(query, user_id_str: str) -> None:
     users['engagers'][user_id_str] = {
         'joined': True, 'earnings': 0, 'signup_bonus': 500, 'task_timers': {}, 'awaiting_payout': False,
         'daily_tasks': {'count': 0, 'last_reset': time.time()}, 'tasks_per_order': {}, 'claims': []
@@ -741,13 +791,13 @@ async def handle_join_button(query: CallbackQuery, user_id_str: str) -> None:
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.message.reply_text("You’re in! Enjoy your ₦500 signup bonus. Start earning—withdraw at ₦1,000 earned!", reply_markup=reply_markup)
-    save_users()
+    await save_users()
 
-async def handle_platform_button(query: CallbackQuery, user_id_str: str, data: str) -> None:
+async def handle_platform_button(query, user_id_str: str, data: str) -> None:
     platform = data.split('_')[1]
     users['clients'][user_id_str]['platform'] = platform
     users['clients'][user_id_str]['step'] = 'select_package'
-    save_users()
+    await save_users()
     keyboard = [
         [InlineKeyboardButton("Followers", callback_data='select_followers')],
         [InlineKeyboardButton("Likes", callback_data='select_likes')],
@@ -765,7 +815,7 @@ async def handle_platform_button(query: CallbackQuery, user_id_str: str, data: s
         reply_markup=reply_markup
     )
 
-async def handle_select_button(query: CallbackQuery, user_id_str: str, data: str) -> None:
+async def handle_select_button(query, user_id_str: str, data: str) -> None:
     package_type = data.split('_')[1]
     users['clients'][user_id_str]['order_type'] = package_type
     users['clients'][user_id_str]['step'] = 'awaiting_order'
@@ -784,7 +834,7 @@ async def handle_select_button(query: CallbackQuery, user_id_str: str, data: str
         f"Or send a screenshot of your profile with the message: `package {package_example}`\n"
         f"Check /client for package options."
     )
-    save_users()
+    await save_users()
 
 async def handle_task_button(query: CallbackQuery, user_id: int, user_id_str: str, data: str) -> None:
     task_parts = data.split('_', 2)
@@ -1037,16 +1087,13 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     action = data if data in ['client', 'engager', 'help', 'tasks', 'balance'] else None
     is_signup_action = data in ['client', 'engager', 'join', 'help', 'start']
 
-    # Rate limit check
     if not check_rate_limit(user_id, is_signup_action=is_signup_action, action=action):
         await query.message.reply_text("Hang on a sec and try again!")
         return
 
-    # Acknowledge the button click
     await query.answer()
     logger.info(f"Button clicked by user {user_id}: {data}")
 
-    # Process the button action
     try:
         if data == 'start':
             await handle_start_button(update, context)
@@ -1106,14 +1153,15 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error(f"Error in button handler for callback_data '{data}': {e}")
         await query.message.reply_text("An error occurred. Please try again or contact support.")
 
+
 # Balance command
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if not check_rate_limit(user_id, action='balance'):
-        await update.callback_query.message.reply_text("Hang on a sec and try again!")
+        await update.message.reply_text("Hang on a sec and try again!")  # Fixed to use update.message
         return
     if user_id not in users['engagers']:
-        await update.callback_query.message.reply_text("Join as an engager first with /engager!")
+        await update.message.reply_text("Join as an engager first with /engager!")
         return
     user_data = users['engagers'][user_id]
     earnings = user_data['earnings']
@@ -1131,28 +1179,28 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("Withdraw", callback_data='withdraw')]] if withdrawable >= 1000 else []
     keyboard.append([InlineKeyboardButton("See Tasks", callback_data='tasks')])
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.callback_query.message.reply_text(message, reply_markup=reply_markup)
+    await update.message.reply_text(message, reply_markup=reply_markup)
 
 # Withdraw command
 async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if not check_rate_limit(user_id, action='withdraw'):
-        await update.callback_query.message.reply_text("Hang on a sec and try again!")
+        await update.message.reply_text("Hang on a sec and try again!")
         return
     if user_id not in users['engagers']:
-        await update.callback_query.message.reply_text("Join as an engager first with /engager!")
+        await update.message.reply_text("Join as an engager first with /engager!")
         return
     user_data = users['engagers'][user_id]
     earnings = user_data['earnings']
     if earnings < 1000:
-        await update.callback_query.message.reply_text("You need at least ₦1,000 earned (excl. bonus) to withdraw!")
+        await update.message.reply_text("You need at least ₦1,000 earned (excl. bonus) to withdraw!")
         return
     if user_data.get('awaiting_payout', False):
-        await update.callback_query.message.reply_text("You already have a pending withdrawal. Wait for admin approval!")
+        await update.message.reply_text("You already have a pending withdrawal. Wait for admin approval!")
         return
     user_data['awaiting_payout'] = True
-    await update.callback_query.message.reply_text("Reply with your 10-digit OPay account number to withdraw.")
-    save_users()
+    await update.message.reply_text("Reply with your 10-digit OPay account number to withdraw.")
+    await save_users()
 
 # Message handler
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1542,86 +1590,44 @@ async def process_updates():
             logger.info(f"Successfully processed update: {update}")
         except Exception as e:
             logger.error(f"Error processing update: {str(e)}")
-            
-import threading
 
-def start_update_processing():
-    import asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    # Start the update processing task
-    loop.create_task(process_updates())
-    logger.info("Scheduled process_updates task")
-    
-    # Run the event loop in a separate thread
-    def run_loop():
-        try:
-            logger.info("Starting event loop in thread")
-            loop.run_forever()
-            logger.info("Event loop stopped")
-        except Exception as e:
-            logger.error(f"Error in event loop thread: {str(e)}")
-    
-    thread = threading.Thread(target=run_loop, daemon=True)
-    thread.start()
-    logger.info("Started update processing thread")
 
+# Webhook routes
 @app.route('/webhook', methods=['POST'])
-def webhook():
+async def webhook():
     try:
         update = Update.de_json(request.get_json(force=True), application.bot)
         if update:
-            application.update_queue.put_nowait(update)  # Synchronously put the update in the queue
-            logger.info(f"Received update: {update}")
+            await application.process_update(update)  # Process directly
+            logger.info(f"Received and processed update: {update}")
         else:
             logger.warning("Received invalid update from Telegram")
         return "OK", 200
     except Exception as e:
         logger.error(f"Error in webhook route: {str(e)}")
         return "Error", 500
+
 @app.route('/reset-webhook', methods=['GET'])
-def reset_webhook():
+async def reset_webhook():
     try:
-        import asyncio
-        loop = asyncio.get_event_loop()
-        # Delete the existing webhook
-        loop.run_until_complete(application.bot.delete_webhook())
+        await application.bot.delete_webhook()
         logger.info("Deleted existing webhook")
-        # Set the webhook again
-        webhook_url = "https://vibeliftbot.onrender.com/webhook"
-        loop.run_until_complete(application.bot.set_webhook(webhook_url))
-        logger.info(f"Webhook reset to {webhook_url}")
+        await application.bot.set_webhook(WEBHOOK_URL)
+        logger.info(f"Webhook reset to {WEBHOOK_URL}")
         return "Webhook reset successfully", 200
     except Exception as e:
         logger.error(f"Error resetting webhook: {str(e)}")
         return f"Error resetting webhook: {str(e)}", 500
-# Main function
-# Define application as a global variable
-application = None
 
-def main():
-    global application
+@app.route('/')
+async def health_check():
+    return "Service is running", 200
+
+# Main function
+async def main():
+    global application, users
     logger.info("Starting bot...")
     application = Application.builder().token(BOT_TOKEN).build()
-
-    # Initialize the application
-    import asyncio
-    loop = asyncio.get_event_loop()
-    try:
-        loop.run_until_complete(application.initialize())
-        logger.info("Application initialized")
-    except Exception as e:
-        logger.error(f"Error initializing application: {str(e)}")
-        raise
-
-    # Start the application
-    try:
-        loop.run_until_complete(application.start())
-        logger.info("Application started")
-    except Exception as e:
-        logger.error(f"Error starting application: {str(e)}")
-        raise
 
     # Add handlers
     application.add_handler(CommandHandler("start", start))
@@ -1638,22 +1644,21 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.PHOTO, handle_message))
 
-    # Set Telegram webhook
-    webhook_url = "https://vibeliftbot.onrender.com/webhook"
-    loop.run_until_complete(application.bot.set_webhook(webhook_url))
-    logger.info(f"Webhook set to {webhook_url}")
+    # Load users
+    users = await load_users()
 
-    # Start background update processing
-    start_update_processing()
-    # Start Flask app
-@app.route('/')
-def health_check():
-    return "Service is running", 200
+    # Initialize and start bot
+    await application.initialize()
+    logger.info("Application initialized")
+    await application.start()
+    logger.info("Application started")
+    await application.bot.set_webhook(WEBHOOK_URL)
+    logger.info(f"Webhook set to {WEBHOOK_URL}")
 
-# Call main() directly so it runs when the module is imported by Gunicorn
-main()
+    # Run Flask with uvicorn
+    config = uvicorn.Config(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)), log_level="info")
+    server = uvicorn.Server(config)
+    await server.serve()
 
-if __name__ == '__main__':
-    # This block is only for running the script directly (e.g., for local testing)
-    # Since we're using Gunicorn, this won't be executed in production
-    pass
+if __name__ == "__main__":
+    asyncio.run(main())

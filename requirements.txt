@@ -1,6 +1,6 @@
 Flask>=2.0.0
 python-telegram-bot[webhooks]==20.0
 requests==2.32.3
-pymongo==4.8.0
-gunicorn==21.2.0
-python-dotenv==1.0.1  # Add this for loading environment variables
+motor==3.3.2
+uvicorn==0.29.0
+python-dotenv==1.0.1
