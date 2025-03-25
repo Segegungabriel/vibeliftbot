@@ -321,6 +321,57 @@ async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=reply_markup
     )
 
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.effective_user.id)
+    logger.info(f"Received /status command from user {user_id}")
+    if not check_rate_limit(user_id, action='status'):
+        logger.info(f"User {user_id} is rate-limited for /status")
+        await update.message.reply_text("Please wait a moment before trying again!")
+        return
+    try:
+        if user_id not in users.get('clients', {}):
+            await update.message.reply_text("You don’t have any active orders. Start one with /client!")
+            logger.info(f"User {user_id} has no active orders")
+            return
+
+        client_data = users['clients'][user_id]
+        order_id = client_data.get('order_id')
+
+        if not order_id:
+            await update.message.reply_text("You don’t have an active order. Start one with /client!")
+            logger.info(f"User {user_id} has no order_id")
+            return
+
+        if client_data.get('step') == 'awaiting_payment':
+            await update.message.reply_text(
+                f"Order ID: {order_id}\n"
+                "Status: Awaiting payment\n"
+                "Please use /pay to complete your order, or /cancel to start over."
+            )
+            logger.info(f"User {user_id} has an order awaiting payment: {order_id}")
+        elif order_id in users.get('active_orders', {}):
+            order_details = users['active_orders'][order_id]
+            platform = order_details.get('platform', 'Unknown')
+            details = order_details.get('details', 'No details provided')
+            await update.message.reply_text(
+                f"Order ID: {order_id}\n"
+                f"Status: Active\n"
+                f"Platform: {platform.capitalize()}\n"
+                f"Details: {details}\n"
+                "Results expected in 4-5 hours for small orders."
+            )
+            logger.info(f"User {user_id} checked status of active order: {order_id}")
+        else:
+            await update.message.reply_text(
+                f"Order ID: {order_id}\n"
+                "Status: Unknown\n"
+                "Please contact support for assistance."
+            )
+            logger.warning(f"User {user_id} has an order with unknown status: {order_id}")
+    except Exception as e:
+        logger.error(f"Error in /status for user {user_id}: {str(e)}")
+        await update.message.reply_text("An error occurred while checking your order status. Please try again or contact support.")
+        
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if update.callback_query:
