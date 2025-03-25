@@ -153,6 +153,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
+    logger.info(f"Received /client command from user {user_id}")
+    
     if update.callback_query:
         message = update.callback_query.message
         await update.callback_query.answer()
@@ -160,32 +162,42 @@ async def client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = update.message
 
     if not check_rate_limit(user_id, action='client'):
+        logger.info(f"User {user_id} is rate-limited for /client")
         await message.reply_text("Hang on a sec and try again!")
         return
 
-    if user_id in users['clients']:
-        if users['clients'][user_id]['step'] == 'completed':
-            await message.reply_text("Your order is active! Results in 4-5 hours for small orders.")
-            return
-        elif users['clients'][user_id]['step'] == 'awaiting_payment':
-            await message.reply_text("You have an order awaiting payment. Use /pay to complete it!")
-            return
-        else:
-            await message.reply_text("You’re already a client! Reply with your order or use /pay.")
-            return
+    try:
+        if user_id in users['clients']:
+            client_data = users['clients'][user_id]
+            if client_data['step'] == 'completed':
+                logger.info(f"User {user_id} has a completed order")
+                await message.reply_text("Your order is active! Results in 4-5 hours for small orders.")
+                return
+            elif client_data['step'] == 'awaiting_payment':
+                logger.info(f"User {user_id} has an order awaiting payment")
+                await message.reply_text("You have an order awaiting payment. Use /pay to complete it, or /cancel to start over!")
+                return
+            else:
+                logger.info(f"User {user_id} is already a client, current step: {client_data['step']}")
+                await message.reply_text("You’re already a client! Reply with your order or use /pay.")
+                return
 
-    users['clients'][user_id] = {'step': 'select_platform'}
-    keyboard = [
-        [InlineKeyboardButton("Instagram", callback_data='platform_instagram')],
-        [InlineKeyboardButton("Facebook", callback_data='platform_facebook')],
-        [InlineKeyboardButton("TikTok", callback_data='platform_tiktok')],
-        [InlineKeyboardButton("Twitter", callback_data='platform_twitter')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await message.reply_text(
-        "Boost your social media! First, select a platform:", reply_markup=reply_markup
-    )
-    await save_users()
+        users['clients'][user_id] = {'step': 'select_platform'}
+        keyboard = [
+            [InlineKeyboardButton("Instagram", callback_data='platform_instagram')],
+            [InlineKeyboardButton("Facebook", callback_data='platform_facebook')],
+            [InlineKeyboardButton("TikTok", callback_data='platform_tiktok')],
+            [InlineKeyboardButton("Twitter", callback_data='platform_twitter')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await message.reply_text(
+            "Boost your social media! First, select a platform:", reply_markup=reply_markup
+        )
+        await save_users()
+        logger.info(f"Sent platform selection prompt to user {user_id}")
+    except Exception as e:
+        logger.error(f"Error in /client for user {user_id}: {str(e)}")
+        await message.reply_text("An error occurred while starting your order. Please try again or contact support.")
 
 async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
@@ -321,36 +333,42 @@ async def initiate_payment(user_id: str, amount: int, order_id: str) -> str:
         logger.error(f"Error initiating payment for user {user_id}, order {order_id}: {str(e)}")
         raise
 
-async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not check_rate_limit(user_id, is_signup_action=True):
+async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.effective_user.id)
+    logger.info(f"Received /pay command from user {user_id}")
+    
+    if not check_rate_limit(user_id, action='pay'):
+        logger.info(f"User {user_id} is rate-limited for /pay")
         await update.message.reply_text("Hang on a sec and try again!")
         return
-    user_id_str = str(user_id)
-    if user_id_str not in users['clients'] or users['clients'][user_id_str]['step'] != 'awaiting_payment':
+
+    if user_id not in users['clients']:
+        logger.info(f"User {user_id} is not a client for /pay")
         await update.message.reply_text("Start an order first with /client!")
         return
-    amount = users['clients'][user_id_str]['amount']
-    order_id = users['clients'][user_id_str]['order_id']
+
+    client_data = users['clients'][user_id]
+    if client_data['step'] != 'awaiting_payment':
+        logger.info(f"User {user_id} is not in awaiting_payment step, current step: {client_data['step']}")
+        await update.message.reply_text("You don’t have an order awaiting payment. Start a new order with /client!")
+        return
+
     try:
-        payment_url = await initiate_payment(user_id_str, amount, order_id)
-        # Store the payment in pending_payments
-        users.setdefault("pending_payments", {})[order_id] = {
-            "user_id": user_id_str,
-            "order_details": users['clients'][user_id_str]['order_details']
-        }
-        logger.info(f"Added to pending_payments: {order_id} for user {user_id_str}")
-        await save_users()  # Save to MongoDB
-        keyboard = [
-            [InlineKeyboardButton(f"Pay ₦{amount}", url=payment_url)],
-            [InlineKeyboardButton("Cancel Order", callback_data='cancel')],
-            [InlineKeyboardButton("Back to Start", callback_data='start')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("Click to pay via Paystack:", reply_markup=reply_markup)
+        amount = client_data['amount']
+        order_id = client_data['order_id']
+        platform = client_data['platform']
+        logger.info(f"Processing payment for user {user_id}: Order {order_id}, Amount ₦{amount}, Platform {platform}")
+        
+        payment_message = (
+            f"Please send ₦{amount} to this OPay account:\n"
+            f"Account Number: {OPAY_ACCOUNT}\n\n"
+            f"After payment, reply with a screenshot of your payment confirmation."
+        )
+        await update.message.reply_text(payment_message)
+        logger.info(f"Sent payment instructions to user {user_id}")
     except Exception as e:
-        logger.error(f"Error initiating payment: {e}")
-        await update.message.reply_text("Something went wrong. Try again later.")
+        logger.error(f"Error in /pay for user {user_id}: {str(e)}")
+        await update.message.reply_text("An error occurred while processing your payment. Please try again or contact support.")
 
 @app.route('/payment-success', methods=['GET'])
 async def payment_success():
@@ -1355,17 +1373,19 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
     text = update.message.text.lower() if update.message.text else ""
+    logger.info(f"Received message from user {user_id}: '{update.message.text}' (normalized: '{text}')")
+    
     is_signup_action = (
         (user_id in users['clients'] and users['clients'][user_id]['step'] in ['select_platform', 'awaiting_order', 'awaiting_urls', 'awaiting_payment']) or
         (user_id in users['engagers'] and 'awaiting_payout' in users['engagers'][user_id])
     )
     if not check_rate_limit(update.message.from_user.id, is_signup_action=is_signup_action):
+        logger.info(f"User {user_id} is rate-limited")
         await update.message.reply_text("Hang on a sec and try again!")
         return
     if str(update.message.chat_id) == ADMIN_GROUP_ID and user_id != ADMIN_USER_ID:
+        logger.info(f"User {user_id} is not admin, ignoring message in admin group")
         return
-
-    logger.info(f"Received message from user {user_id}: '{update.message.text}' (normalized: '{text}')")
 
     # Handle pending admin actions (e.g., audit, clear tasks, verification codes)
     pending_action = None
@@ -1378,6 +1398,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif time.time() >= action_data['expiration']:
             del users['pending_admin_actions'][action_id]
     if pending_action and action_id_to_remove.startswith('audit_'):
+        logger.info(f"Processing audit action for user {user_id}")
         if pending_action['action'] == 'awaiting_audit_input':
             parts = text.split(maxsplit=2)
             if len(parts) < 2:
@@ -1408,6 +1429,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await save_users()
             return
     if pending_action and action_id_to_remove.startswith('clear_task_'):
+        logger.info(f"Processing clear_task action for user {user_id}")
         if pending_action['action'] == 'awaiting_clear_task_input':
             parts = text.split(maxsplit=1)
             if len(parts) < 2:
@@ -1463,6 +1485,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await save_users()
             return
     if pending_action and text.isdigit() and len(text) == 6:
+        logger.info(f"Processing verification code for user {user_id}")
         if text == pending_action['code']:
             action = pending_action['action']
             action_data = pending_action['action_data']
@@ -1613,7 +1636,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Client order submission
     if user_id in users['clients']:
         client_data = users['clients'][user_id]
+        logger.info(f"User {user_id} is a client, current step: {client_data['step']}")
         if client_data['step'] == 'awaiting_order':
+            logger.info(f"Processing order submission for user {user_id}")
             platform = client_data['platform']
             order_type = client_data['order_type']
             package = None
@@ -1623,6 +1648,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if update.message.text:
                 parts = update.message.text.split()
                 if len(parts) < 2:
+                    logger.info(f"User {user_id} provided invalid order format")
                     await update.message.reply_text("Please provide the URL and package (e.g., https://instagram.com/yourusername 10) or use the format: `package <package>` with a screenshot.")
                     return
                 if parts[0].startswith('http'):
@@ -1631,89 +1657,101 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif parts[0] == 'package':
                     package = parts[1]
                 else:
+                    logger.info(f"User {user_id} provided invalid order format")
                     await update.message.reply_text("Invalid format! Use: `<URL> <package>` or `package <package>` with a screenshot.")
                     return
             elif update.message.photo:
                 profile_image_id = update.message.photo[-1].file_id
                 if not text.startswith('package '):
+                    logger.info(f"User {user_id} did not provide package with screenshot")
                     await update.message.reply_text("Please include the package in the format: `package <package>` (e.g., `package 10`) with your screenshot.")
                     return
                 parts = text.split()
                 package = parts[1]
             else:
+                logger.info(f"User {user_id} did not provide URL or screenshot")
                 await update.message.reply_text("Please provide a URL or a screenshot of your profile along with the package!")
                 return
 
-            if order_type != 'bundle':
-                if package not in package_limits[order_type][platform]:
-                    await update.message.reply_text(f"Invalid package! Available for {order_type} on {platform}: {', '.join(package_limits[order_type][platform].keys())}")
-                    return
-                amount = pricing[order_type][platform][package]
-                follows = package_limits[order_type][platform][package] if order_type == 'followers' else 0
-                likes = package_limits[order_type][platform][package] if order_type == 'likes' else 0
-                comments = package_limits[order_type][platform][package] if order_type == 'comments' else 0
-            else:
-                if package not in package_limits['bundle'][platform]:
-                    await update.message.reply_text(f"Invalid bundle! Available for {platform}: {', '.join(package_limits['bundle'][platform].keys())}")
-                    return
-                bundle = package_limits['bundle'][platform][package]
-                follows = bundle['follows']
-                likes = bundle['likes']
-                comments = bundle['comments']
-                amount = bundle['price']
+            try:
+                if order_type != 'bundle':
+                    if package not in package_limits[order_type][platform]:
+                        logger.info(f"User {user_id} provided invalid package: {package}")
+                        await update.message.reply_text(f"Invalid package! Available for {order_type} on {platform}: {', '.join(package_limits[order_type][platform].keys())}")
+                        return
+                    amount = pricing[order_type][platform][package]
+                    follows = package_limits[order_type][platform][package] if order_type == 'followers' else 0
+                    likes = package_limits[order_type][platform][package] if order_type == 'likes' else 0
+                    comments = package_limits[order_type][platform][package] if order_type == 'comments' else 0
+                else:
+                    if package not in package_limits['bundle'][platform]:
+                        logger.info(f"User {user_id} provided invalid bundle: {package}")
+                        await update.message.reply_text(f"Invalid bundle! Available for {platform}: {', '.join(package_limits['bundle'][platform].keys())}")
+                        return
+                    bundle = package_limits['bundle'][platform][package]
+                    follows = bundle['follows']
+                    likes = bundle['likes']
+                    comments = bundle['comments']
+                    amount = bundle['price']
 
-            handle = profile_url.split('/')[-1] if profile_url else f"@{user_id}"
-            order_id = f"{user_id}_{int(time.time())}"
-            order_details = {
-                'client_id': user_id,
-                'handle': handle,
-                'platform': platform,
-                'follows_left': follows,
-                'likes_left': likes,
-                'comments_left': comments,
-                'priority': False
-            }
-            if profile_url:
-                order_details['profile_url'] = profile_url
-            if profile_image_id:
-                order_details['profile_image_id'] = profile_image_id
+                handle = profile_url.split('/')[-1] if profile_url else f"@{user_id}"
+                order_id = f"{user_id}_{int(time.time())}"
+                order_details = {
+                    'client_id': user_id,
+                    'handle': handle,
+                    'platform': platform,
+                    'follows_left': follows,
+                    'likes_left': likes,
+                    'comments_left': comments,
+                    'priority': False
+                }
+                if profile_url:
+                    order_details['profile_url'] = profile_url
+                if profile_image_id:
+                    order_details['profile_image_id'] = profile_image_id
 
-            users['clients'][user_id]['step'] = 'awaiting_payment'
-            users['clients'][user_id]['order_id'] = order_id
-            users['clients'][user_id]['amount'] = amount
-            users['clients'][user_id]['order_details'] = order_details
+                users['clients'][user_id]['step'] = 'awaiting_payment'
+                users['clients'][user_id]['order_id'] = order_id
+                users['clients'][user_id]['amount'] = amount
+                users['clients'][user_id]['order_details'] = order_details
 
-            payment_id = order_id
-            users['pending_payments'][payment_id] = {
-                'user_id': user_id,
-                'client_id': user_id,
-                'order_id': order_id,
-                'order_details': order_details
-            }
-            if profile_image_id:
-                users['pending_payments'][payment_id]['photo_id'] = profile_image_id
-                await application.bot.send_photo(
-                    chat_id=ADMIN_GROUP_ID,
-                    photo=profile_image_id,
-                    caption=f"New order from {user_id} for {platform} ({order_type} package: {package}). Amount: ₦{amount}"
+                payment_id = order_id
+                users.setdefault('pending_payments', {})[payment_id] = {
+                    'user_id': user_id,
+                    'client_id': user_id,
+                    'order_id': order_id,
+                    'order_details': order_details
+                }
+                if profile_image_id:
+                    users['pending_payments'][payment_id]['photo_id'] = profile_image_id
+                    await application.bot.send_photo(
+                        chat_id=ADMIN_GROUP_ID,
+                        photo=profile_image_id,
+                        caption=f"New order from {user_id} for {platform} ({order_type} package: {package}). Amount: ₦{amount}"
+                    )
+                else:
+                    await application.bot.send_message(
+                        chat_id=ADMIN_GROUP_ID,
+                        text=f"New order from {user_id} for {platform} ({order_type} package: {package}). Amount: ₦{amount}\nProfile URL: {profile_url}"
+                    )
+                await update.message.reply_text(
+                    f"Order placed! Total: ₦{amount} for {follows} follows, {likes} likes, {comments} comments on {platform}.\n"
+                    f"Use /pay to complete your payment, or /cancel to cancel your order."
                 )
-            else:
-                await application.bot.send_message(
-                    chat_id=ADMIN_GROUP_ID,
-                    text=f"New order from {user_id} for {platform} ({order_type} package: {package}). Amount: ₦{amount}\nProfile URL: {profile_url}"
-                )
-            await update.message.reply_text(
-                f"Order placed! Total: ₦{amount} for {follows} follows, {likes} likes, {comments} comments on {platform}.\n"
-                f"Use /pay to complete your payment, or /cancel to cancel your order."
-            )
-            await save_users()
+                await save_users()
+                logger.info(f"Order placed for user {user_id}: Order ID {order_id}, Amount ₦{amount}")
+            except Exception as e:
+                logger.error(f"Error processing order for user {user_id}: {str(e)}")
+                await update.message.reply_text("An error occurred while placing your order. Please try again or contact support.")
             return
         elif client_data['step'] == 'awaiting_payment':
+            logger.info(f"User {user_id} is in awaiting_payment step, prompting for /pay")
             await update.message.reply_text("Please use /pay to proceed with payment, or /cancel to cancel your order.")
             return
 
     # Engager payout submission
     if user_id in users['engagers'] and users['engagers'][user_id].get('awaiting_payout', False):
+        logger.info(f"Processing payout submission for user {user_id}")
         if not text.isdigit() or len(text) != 10:
             await update.message.reply_text("Please provide a valid 10-digit OPay account number!")
             return
@@ -1734,11 +1772,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text=f"New withdrawal request from {user_id}: ₦{amount} to OPay account {account_number}."
         )
         await save_users()
+        logger.info(f"Payout request submitted for user {user_id}: Amount ₦{amount}")
         return
 
     # Engager task proof submission
     if user_id in users['engagers']:
         user_data = users['engagers'][user_id]
+        logger.info(f"Checking for task proof submission from user {user_id}")
         for timer_key, start_time in list(user_data.get('task_timers', {}).items()):
             order_id, task_type = timer_key.rsplit('_', 1)
             if order_id not in users.get('active_orders', {}):
@@ -1785,11 +1825,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=f"{task_name} proof from {user_id} for order {order_id} on {users['active_orders'][order_id]['platform']}."
             )
             await save_users()
+            logger.info(f"Task completed for user {user_id}: Order {order_id}, Type {task_type}, Earned ₦{amount}")
             return
 
     # Admin group message handling for set priority
     if str(update.message.chat_id) == ADMIN_GROUP_ID and user_id == ADMIN_USER_ID:
         if pending_action and action_id_to_remove.startswith('set_priority_'):
+            logger.info(f"Processing set_priority action for user {user_id}")
             if pending_action['action'] == 'awaiting_priority_input':
                 parts = text.split(maxsplit=1)
                 if len(parts) < 2:
@@ -1870,6 +1912,8 @@ async def main():
     application.add_handler(CommandHandler("balance", balance))
     application.add_handler(CommandHandler("withdraw", withdraw))
     application.add_handler(CommandHandler("admin", admin))
+    application.add_handler(CommandHandler("cancel", cancel))
+    application.add_handler(CommandHandler("order", order))  # Add this line
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.PHOTO, handle_message))
@@ -1894,10 +1938,7 @@ async def main():
         host="0.0.0.0",
         port=int(os.getenv("PORT", 8000)),
         log_level="info",
-        loop="asyncio"  # Ensure uvicorn uses asyncio loop
+        loop="asyncio"
     )
     server = uvicorn.Server(config)
     await server.serve()
-
-if __name__ == "__main__":
-    asyncio.run(main())
