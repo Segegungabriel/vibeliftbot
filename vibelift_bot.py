@@ -224,6 +224,57 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error(f"Error in /cancel for user {user_id}: {str(e)}")
         await update.message.reply_text("An error occurred while canceling. Please try again or contact support.")
 
+async def order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.effective_user.id)
+    logger.info(f"Received /order command from user {user_id}")
+
+    if not check_rate_limit(user_id, action='order'):
+        logger.info(f"User {user_id} is rate-limited for /order")
+        await update.message.reply_text("Hang on a sec and try again!")
+        return
+
+    try:
+        # Check if the user is a client
+        if user_id in users['clients']:
+            client_data = users['clients'][user_id]
+            step = client_data['step']
+            platform = client_data.get('platform', 'N/A')
+            order_type = client_data.get('order_type', 'N/A')
+            order_id = client_data.get('order_id', 'N/A')
+            await update.message.reply_text(
+                f"You have an active order:\n"
+                f"Order ID: {order_id}\n"
+                f"Platform: {platform}\n"
+                f"Type: {order_type}\n"
+                f"Status: {step}\n"
+                f"Use /status for more details or /cancel to cancel the order."
+            )
+            return
+
+        # Check if the user has an active order in active_orders
+        for order_id, order_data in users.get('active_orders', {}).items():
+            if order_data['user_id'] == user_id:
+                platform = order_data['platform']
+                order_type = order_data['order_type']
+                status = order_data['status']
+                await update.message.reply_text(
+                    f"You have an active order:\n"
+                    f"Order ID: {order_id}\n"
+                    f"Platform: {platform}\n"
+                    f"Type: {order_type}\n"
+                    f"Status: {status}\n"
+                    f"Use /status for more details."
+                )
+                return
+
+        # If no active order, prompt to start one
+        await update.message.reply_text(
+            "You don’t have an active order. Start a new order with /client!"
+        )
+    except Exception as e:
+        logger.error(f"Error in /order for user {user_id}: {str(e)}")
+        await update.message.reply_text("An error occurred while checking your order. Please try again or contact support.")
+        
 async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     if update.callback_query:
