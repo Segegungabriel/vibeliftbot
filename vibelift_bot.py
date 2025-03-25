@@ -6,7 +6,7 @@ import asyncio
 import uvicorn
 from typing import Dict, Any
 from motor.motor_asyncio import AsyncIOMotorClient  # Use async MongoDB
-from flask import Flask, request, send_file
+from flask import Flask, jsonify, request, send_file
 from dotenv import load_dotenv
 from asgiref.wsgi import WsgiToAsgi  # Add this import
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, CallbackQuery  # Add CallbackQuery
@@ -1897,8 +1897,8 @@ async def health_check():
 async def main():
     global application, users
     logger.info("Starting bot...")
-    
-    # Initialize the application
+
+    # Initialize the Telegram application
     application = Application.builder().token(BOT_TOKEN).build()
 
     # Add handlers
@@ -1919,12 +1919,20 @@ async def main():
     application.add_handler(MessageHandler(filters.PHOTO, handle_message))
 
     # Load users
-    users = await load_users()
-    logger.info("Users loaded successfully")
+    try:
+        users = await load_users()
+        logger.info("Users loaded successfully")
+    except Exception as e:
+        logger.error(f"Failed to load users: {str(e)}")
+        return
 
     # Initialize the application
-    await application.initialize()
-    logger.info("Application initialized")
+    try:
+        await application.initialize()
+        logger.info("Application initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize application: {str(e)}")
+        return
 
     # Set the webhook
     try:
@@ -1937,7 +1945,7 @@ async def main():
     # Wrap Flask app in WsgiToAsgi for ASGI compatibility
     asgi_app = WsgiToAsgi(app)
 
-    # Run uvicorn with the ASGI app
+    # Run Uvicorn server
     port = int(os.getenv("PORT", 10000))  # Use Render's default port 10000
     config = uvicorn.Config(
         app=asgi_app,
@@ -1945,15 +1953,23 @@ async def main():
         port=port,
         log_level="info",
         loop="asyncio",
-        workers=1  # Use a single worker to avoid issues with async
+        workers=1  # Single worker to avoid async issues
     )
     logger.info(f"Starting Uvicorn server on host 0.0.0.0, port {port}")
     server = uvicorn.Server(config)
-    
-    # Start the server and keep it running
+
+    # Start the server
     try:
         await server.serve()
         logger.info("Uvicorn server is running")
     except Exception as e:
         logger.error(f"Failed to start Uvicorn server: {str(e)}")
+        raise
+
+# Run the main function
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        logger.error(f"Error running main: {str(e)}")
         raise
