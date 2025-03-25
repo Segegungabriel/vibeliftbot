@@ -1996,7 +1996,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"Task completed for user {user_id}: Order {order_id}, Type {task_type}, Earned ₦{amount}")
             return
 
-    # Admin group message handling for set priority
+    # Admin group message handling for set priorit
     if str(update.message.chat_id) == ADMIN_GROUP_ID and user_id == ADMIN_USER_ID:
         if pending_action and action_id_to_remove.startswith('set_priority_'):
             logger.info(f"Processing set_priority action for user {user_id}")
