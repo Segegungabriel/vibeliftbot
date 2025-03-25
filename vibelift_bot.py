@@ -373,7 +373,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logger.error(f"Error in /status for user {user_id}: {str(e)}")
         await update.message.reply_text("An error occurred while checking your order status. Please try again or contact support.")
-        
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if update.callback_query:
@@ -478,15 +478,13 @@ async def initiate_payment(user_id: str, amount: int, order_id: str) -> str:
         logger.error(f"Error initiating payment for user {user_id}, order {order_id}: {str(e)}")
         raise
 
-async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id_str = str(update.message.from_user.id)
-    if not check_rate_limit(user_id_str, action='pay'):
+aasync def pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.message.from_user.id)
+    if not check_rate_limit(user_id, action='pay'):  # Added action parameter
         await update.message.reply_text("Please wait a moment before trying again!")
         return
-
-    if user_id not in users['clients']:
-        logger.info(f"User {user_id} is not a client for /pay")
-        await update.message.reply_text("Start an order first with /client!")
+    if user_id not in users['clients'] or users['clients'][user_id].get('step') != 'awaiting_payment':
+        await update.message.reply_text("You don’t have an order awaiting payment! Start with /client.")
         return
 
     client_data = users['clients'][user_id]
@@ -1773,17 +1771,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in users['clients']:
         client_data = users['clients'][user_id]
         logger.info(f"User {user_id} is a client, current step: {client_data['step']}")
-        if client_data['step'] == 'awaiting_order':
-    logger.info(f"Processing order submission for user {user_id}")
-    platform = client_data['platform']
-    order_type = client_data['order_type']
-    package = None
-    profile_url = None
-    profile_image_id = None
-    follows = 0
-    likes = 0
-    comments = 0
-    amount = 0
+    if client_data['step'] == 'awaiting_order':
+        logger.info(f"Processing order submission for user {user_id}")
+        platform = client_data['platform']
+        order_type = client_data['order_type']
+        package = None
+        profile_url = None
+        profile_image_id = None
+        follows = 0
+        likes = 0
+        comments = 0
+        amount = 0
 
     # Use caption if photo is provided, otherwise use text
     text = (update.message.caption or update.message.text or "").strip()
