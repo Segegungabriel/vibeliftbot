@@ -16,7 +16,6 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters,
     ContextTypes,
-    Dispatcher,
 )
 
 # Configure logging
@@ -322,15 +321,11 @@ async def payment_success():
     return await send_file("static/success.html") 
 
 @app.route('/webhook', methods=['POST'])
-def webhook():
-    update = request.get_json()
-    logger.info(f"Received update: {update}")
-    if update and application is not None:
-        application.process_update(Update.de_json(update, application.bot))
-    else:
-        logger.error("Application is None or update is invalid")
+async def webhook():
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    await application.update_queue.put(update)  # Queue the update for processing
     return "OK", 200
-    
+
 @app.route('/payment_callback', methods=['POST'])
 async def payment_callback():
     global users
@@ -1530,6 +1525,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             save_users()
 
+async def process_updates():
+    while True:
+        update = await application.update_queue.get()
+        await application.process_update(update)
+
+def start_update_processing():
+    import asyncio
+    loop = asyncio.get_event_loop()
+    loop.create_task(process_updates())
+
 # Main function
 # Define application as a global variable
 application = None
@@ -1559,19 +1564,11 @@ def main():
     application.bot.set_webhook(webhook_url)
     logger.info(f"Webhook set to {webhook_url}")
 
-    # Use the port from Render's environment variable, default to 8443 if not set
-    port = int(os.getenv("PORT", 8443))
-    logger.info(f"Setting webhook to {WEBHOOK_URL} on port {port}")
-    try:
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            url_path="webhook",
-            webhook_url=WEBHOOK_URL
-        )
-    except Exception as e:
-        logger.error(f"Failed to set webhook: {e}")
-        raise
+    # Start background update processing
+    start_update_processing()
+
+    # Start Flask app
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8443)))
 
 # Call main() to initialize application
 main()
