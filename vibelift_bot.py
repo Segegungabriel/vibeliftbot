@@ -8,6 +8,7 @@ from typing import Dict, Any
 from motor.motor_asyncio import AsyncIOMotorClient  # Use async MongoDB
 from flask import Flask, request, send_file
 from dotenv import load_dotenv
+from asgiref.wsgi import WsgiToAsgi  # Add this import
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, CallbackQuery  # Add CallbackQuery
 from telegram.ext import (
     Application,
@@ -1161,7 +1162,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     if not check_rate_limit(user_id, action='balance'):
-        await update.message.reply_text("Hang on a sec and try again!")  # Fixed to use update.message
+        await update.message.reply_text("Hang on a sec and try again!")
         return
     if user_id not in users['engagers']:
         await update.message.reply_text("Join as an engager first with /engager!")
@@ -1594,14 +1595,13 @@ async def process_updates():
         except Exception as e:
             logger.error(f"Error processing update: {str(e)}")
 
-
 # Webhook routes
 @app.route('/webhook', methods=['POST'])
 async def webhook():
     try:
         update = Update.de_json(request.get_json(force=True), application.bot)
         if update:
-            await application.process_update(update)  # Process directly
+            await application.process_update(update)
             logger.info(f"Received and processed update: {update}")
         else:
             logger.warning("Received invalid update from Telegram")
@@ -1630,6 +1630,8 @@ async def health_check():
 async def main():
     global application, users
     logger.info("Starting bot...")
+    
+    # Initialize the application
     application = Application.builder().token(BOT_TOKEN).build()
 
     # Add handlers
@@ -1650,16 +1652,25 @@ async def main():
     # Load users
     users = await load_users()
 
-    # Initialize and start bot
+    # Initialize the application (without starting its own loop)
     await application.initialize()
     logger.info("Application initialized")
-    await application.start()
-    logger.info("Application started")
+
+    # Set the webhook
     await application.bot.set_webhook(WEBHOOK_URL)
     logger.info(f"Webhook set to {WEBHOOK_URL}")
 
-    # Run Flask with uvicorn
-    config = uvicorn.Config(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)), log_level="info")
+    # Wrap Flask app in WsgiToAsgi for ASGI compatibility
+    asgi_app = WsgiToAsgi(app)
+
+    # Run uvicorn with the ASGI app
+    config = uvicorn.Config(
+        asgi_app,
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", 8000)),
+        log_level="info",
+        loop="asyncio"  # Ensure uvicorn uses asyncio loop
+    )
     server = uvicorn.Server(config)
     await server.serve()
 
