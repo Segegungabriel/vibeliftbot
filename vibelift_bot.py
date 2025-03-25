@@ -49,14 +49,6 @@ def health_check():
     logger.info("Health check endpoint accessed")
     return jsonify({"status": "Bot is running"}), 200
 
-# Webhook endpoint for Telegram updates
-@app.route('/webhook', methods=['POST'])
-async def webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    logger.info(f"Received and processed update: {update}")
-    await application.process_update(update)
-    return jsonify({"status": "success"}), 200
-
 # Global variables
 application = None
 users = None
