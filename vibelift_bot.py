@@ -1913,7 +1913,7 @@ async def main():
     application.add_handler(CommandHandler("withdraw", withdraw))
     application.add_handler(CommandHandler("admin", admin))
     application.add_handler(CommandHandler("cancel", cancel))
-    application.add_handler(CommandHandler("order", order))  # Add this line
+    application.add_handler(CommandHandler("order", order))
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.PHOTO, handle_message))
@@ -1933,12 +1933,15 @@ async def main():
     asgi_app = WsgiToAsgi(app)
 
     # Run uvicorn with the ASGI app
+    port = int(os.getenv("PORT", 10000))  # Use Render's default port 10000
     config = uvicorn.Config(
         asgi_app,
         host="0.0.0.0",
-        port=int(os.getenv("PORT", 8000)),
+        port=port,
         log_level="info",
         loop="asyncio"
     )
+    logger.info(f"Starting Uvicorn server on port {port}")
     server = uvicorn.Server(config)
     await server.serve()
+    logger.info("Uvicorn server started")
