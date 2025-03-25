@@ -22,7 +22,7 @@ from telegram.ext import (
 from wsgiref.simple_server import WSGIRequestHandler
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
 from werkzeug.wrappers import Response
-from wsgi_to_asgi import WsgiToAsgi
+from asgiref.wsgi import WsgiToAsgi
 import uvicorn
 import pymongo
 from pymongo import MongoClient
@@ -123,6 +123,8 @@ def check_rate_limit(user_id: str, action: str, cooldown: int = DEFAULT_COOLDOWN
     RATE_LIMITS[key] = current_time
     return True
 
+asgi_app = WsgiToAsgi(app)
+
 # MongoDB functions
 async def load_users() -> Dict[str, Any]:
     try:
@@ -147,8 +149,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.error(f"Update {update} caused error {context.error}")
     if update and update.message:
         await update.message.reply_text("An error occurred. Please try again or contact support.")
-
-# Generate admin code
+\# Generate admin cod
 async def generate_admin_code(user_id: int, action: str, action_data: Dict[str, Any]) -> str:
     code = ''.join(random.choices(string.digits, k=6))
     users['pending_admin_actions'][f"{action}_{user_id}"] = {
@@ -1269,7 +1270,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del users['pending_admin_actions'][action_id]
             await save_users()
 
-    # Admin group message handling
+    # Admin group message handlin
     if str(update.message.chat_id) == ADMIN_GROUP_ID and user_id == str(ADMIN_USER_ID):
         if pending_action and action_id_to_remove.startswith('audit_'):
             logger.info(f"Processing audit action for user {user_id}")
