@@ -1771,229 +1771,146 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in users['clients']:
         client_data = users['clients'][user_id]
         logger.info(f"User {user_id} is a client, current step: {client_data['step']}")
-    if client_data['step'] == 'awaiting_order':
-        logger.info(f"Processing order submission for user {user_id}")
-        platform = client_data['platform']
-        order_type = client_data['order_type']
-        package = None
-        profile_url = None
-        profile_image_id = None
-        follows = 0
-        likes = 0
-        comments = 0
-        amount = 0
+        if client_data['step'] == 'awaiting_order':
+            logger.info(f"Processing order submission for user {user_id}")
+            platform = client_data['platform']
+            order_type = client_data['order_type']
+            package = None
+            profile_url = None
+            profile_image_id = None
+            follows = 0
+            likes = 0
+            comments = 0
+            amount = 0
 
-    # Use caption if photo is provided, otherwise use text
-    text = (update.message.caption or update.message.text or "").strip()
-    if not text:
-        logger.info(f"User {user_id} did not provide text or caption")
-        await update.message.reply_text(
-            "Please provide your order details! See format with /client or after selecting a platform."
-        )
-        return
-
-    # Override rate limit to 5s for order submission retries
-    if not check_rate_limit(user_id, action='message', cooldown=5):
-        logger.info(f"User {user_id} is rate-limited")
-        await update.message.reply_text("Please wait 5 seconds before trying again!")
-        return
-
-    parts = [p.strip() for p in text.split(',')]
-    if parts[0].startswith('http'):
-        # URL + Bundle (e.g., "https://instagram.com/myhandle starter")
-        if len(parts) != 2 or ' ' not in parts[1]:
-            await update.message.reply_text("Use: <URL> <package> (e.g., 'https://instagram.com/myhandle starter')")
-            return
-        profile_url, package = parts[0], parts[1].split()[-1].lower()
-        if package not in package_limits['bundle'][platform]:
-            await update.message.reply_text(f"Invalid bundle! Options: {', '.join(package_limits['bundle'][platform].keys())}")
-            return
-        bundle = package_limits['bundle'][platform][package]
-        follows, likes, comments, amount = bundle['follows'], bundle['likes'], bundle['comments'], bundle['price']
-    elif parts[0].startswith('package '):
-        # Package with Screenshot (e.g., "package starter")
-        if not update.message.photo:
-            await update.message.reply_text("Please include a screenshot with 'package <package>'!")
-            return
-        profile_image_id = update.message.photo[-1].file_id
-        package = parts[0].split(' ')[1].lower()
-        if package not in package_limits['bundle'][platform]:
-            await update.message.reply_text(f"Invalid bundle! Options: {', '.join(package_limits['bundle'][platform].keys())}")
-            return
-        bundle = package_limits['bundle'][platform][package]
-        follows, likes, comments, amount = bundle['follows'], bundle['likes'], bundle['comments'], bundle['price']
-    else:
-        # Custom Order (e.g., "bridgifyy, 20 follows, 30 likes, 20 comments")
-        if not update.message.photo:
-            await update.message.reply_text("Please include a screenshot for custom orders!")
-            return
-        profile_image_id = update.message.photo[-1].file_id
-        handle = parts[0]
-        if len(parts) < 4:
-            await update.message.reply_text("Use: <handle>, X follows, Y likes, Z comments (e.g., 'bridgifyy, 20 follows, 30 likes, 20 comments')")
-            return
-
-        for part in parts[1:]:
-            sub_parts = part.split()
-            if len(sub_parts) != 2:
-                await update.message.reply_text("Each metric needs a number and type (e.g., '20 follows')!")
-                return
-            value, metric = sub_parts
-            try:
-                value = int(value)
-                metric = metric.lower()
-                if metric not in ['follows', 'likes', 'comments']:
-                    await update.message.reply_text("Use: follows, likes, or comments!")
-                    return
-                min_val, max_val = package_limits[metric][platform]['min'], package_limits[metric][platform]['max']
-                if value < min_val or value > max_val:
-                    await update.message.reply_text(f"{metric.capitalize()} must be {min_val}-{max_val}! You entered: {value}")
-                    return
-                if metric == 'follows':
-                    follows = value
-                elif metric == 'likes':
-                    likes = value
-                elif metric == 'comments':
-                    comments = value
-            except ValueError:
-                await update.message.reply_text(f"Invalid number for {metric}! Use digits (e.g., '20 follows')")
+            # Use caption if photo is provided, otherwise use text
+            text = (update.message.caption or update.message.text or "").strip()
+            if not text:
+                logger.info(f"User {user_id} did not provide text or caption")
+                await update.message.reply_text(
+                    "Please provide your order details! See format with /client or after selecting a platform."
+                )
                 return
 
-        if follows == 0 and likes == 0 and comments == 0:
-            await update.message.reply_text("Specify at least one of follows, likes, or comments!")
-            return
-        amount = (follows // 10 * pricing['followers'][platform]) + (likes // 10 * pricing['likes'][platform]) + (comments // 10 * pricing['comments'][platform])
+            # Override rate limit to 5s for order submission retries
+            if not check_rate_limit(user_id, action='message', cooldown=5):
+                logger.info(f"User {user_id} is rate-limited")
+                await update.message.reply_text("Please wait 5 seconds before trying again!")
+                return
 
-    # Process the order
-    handle = profile_url.split('/')[-1] if profile_url else parts[0]
-    order_id = f"{user_id}_{int(time.time())}"
-    order_details = {
-        'client_id': user_id,
-        'handle': handle,
-        'platform': platform,
-        'follows_left': follows,
-        'likes_left': likes,
-        'comments_left': comments,
-        'priority': False
-    }
-    if profile_url:
-        order_details['profile_url'] = profile_url
-    if profile_image_id:
-        order_details['profile_image_id'] = profile_image_id
+            parts = [p.strip() for p in text.split(',')]
+            if parts[0].startswith('http'):
+                # URL + Bundle (e.g., "https://instagram.com/myhandle starter")
+                if len(parts) != 2 or ' ' not in parts[1]:
+                    await update.message.reply_text("Use: <URL> <package> (e.g., 'https://instagram.com/myhandle starter')")
+                    return
+                profile_url, package = parts[0], parts[1].split()[-1].lower()
+                if package not in package_limits['bundle'][platform]:
+                    await update.message.reply_text(f"Invalid bundle! Options: {', '.join(package_limits['bundle'][platform].keys())}")
+                    return
+                bundle = package_limits['bundle'][platform][package]
+                follows, likes, comments, amount = bundle['follows'], bundle['likes'], bundle['comments'], bundle['price']
+            elif parts[0].startswith('package '):
+                # Package with Screenshot (e.g., "package starter")
+                if not update.message.photo:
+                    await update.message.reply_text("Please include a screenshot with 'package <package>'!")
+                    return
+                profile_image_id = update.message.photo[-1].file_id
+                package = parts[0].split(' ')[1].lower()
+                if package not in package_limits['bundle'][platform]:
+                    await update.message.reply_text(f"Invalid bundle! Options: {', '.join(package_limits['bundle'][platform].keys())}")
+                    return
+                bundle = package_limits['bundle'][platform][package]
+                follows, likes, comments, amount = bundle['follows'], bundle['likes'], bundle['comments'], bundle['price']
+            else:
+                # Custom Order (e.g., "bridgifyy, 20 follows, 30 likes, 20 comments")
+                if not update.message.photo:
+                    await update.message.reply_text("Please include a screenshot for custom orders!")
+                    return
+                profile_image_id = update.message.photo[-1].file_id
+                handle = parts[0]
+                if len(parts) < 4:
+                    await update.message.reply_text("Use: <handle>, X follows, Y likes, Z comments (e.g., 'bridgifyy, 20 follows, 30 likes, 20 comments')")
+                    return
 
-    users['clients'][user_id]['step'] = 'awaiting_payment'
-    users['clients'][user_id]['order_id'] = order_id
-    users['clients'][user_id]['amount'] = amount
-    users['clients'][user_id]['order_details'] = order_details
-
-    payment_id = order_id
-    users.setdefault('pending_payments', {})[payment_id] = {
-        'user_id': user_id,
-        'client_id': user_id,
-        'order_id': order_id,
-        'order_details': order_details
-    }
-    if profile_image_id:
-        users['pending_payments'][payment_id]['photo_id'] = profile_image_id
-        await application.bot.send_photo(
-            chat_id=ADMIN_GROUP_ID,
-            photo=profile_image_id,
-            caption=f"New order from {user_id} for {platform}. Amount: ₦{amount}\nFollows: {follows}, Likes: {likes}, Comments: {comments}"
-        )
-    else:
-        await application.bot.send_message(
-            chat_id=ADMIN_GROUP_ID,
-            text=f"New order from {user_id} for {platform}. Amount: ₦{amount}\nFollows: {follows}, Likes: {likes}, Comments: {comments}\nProfile URL: {profile_url}"
-        )
-    await update.message.reply_text(
-        f"Order placed! Total: ₦{amount} for {follows} follows, {likes} likes, {comments} comments on {platform}.\n"
-        f"Use /pay to complete your payment, or /cancel to cancel your order."
-    )
-    await save_users()
-    logger.info(f"Order placed for user {user_id}: Order ID {order_id}, Amount ₦{amount}")
-
-                        # Validate the value
-                        min_val = package_limits[metric][platform]['min']
-                        max_val = package_limits[metric][platform]['max']
-                        if value < min_val or value > max_val:
-                            await update.message.reply_text(f"{metric.capitalize()} must be between {min_val} and {max_val}. You entered: {value}")
+                for part in parts[1:]:
+                    sub_parts = part.split()
+                    if len(sub_parts) != 2:
+                        await update.message.reply_text("Each metric needs a number and type (e.g., '20 follows')!")
+                        return
+                    value, metric = sub_parts
+                    try:
+                        value = int(value)
+                        metric = metric.lower()
+                        if metric not in ['follows', 'likes', 'comments']:
+                            await update.message.reply_text("Use: follows, likes, or comments!")
                             return
-
+                        min_val, max_val = package_limits[metric][platform]['min'], package_limits[metric][platform]['max']
+                        if value < min_val or value > max_val:
+                            await update.message.reply_text(f"{metric.capitalize()} must be {min_val}-{max_val}! You entered: {value}")
+                            return
                         if metric == 'follows':
                             follows = value
                         elif metric == 'likes':
                             likes = value
                         elif metric == 'comments':
                             comments = value
-
-                    # Calculate the price for custom order
-                    amount = 0
-                    if follows > 0:
-                        amount += (follows // 10) * pricing['followers'][platform]
-                    if likes > 0:
-                        amount += (likes // 10) * pricing['likes'][platform]
-                    if comments > 0:
-                        amount += (comments // 10) * pricing['comments'][platform]
-
-                    if amount == 0:
-                        await update.message.reply_text("You must specify at least one of follows, likes, or comments!")
+                    except ValueError:
+                        await update.message.reply_text(f"Invalid number for {metric}! Use digits (e.g., '20 follows')")
                         return
 
-            else:
-                logger.info(f"User {user_id} did not provide URL or screenshot")
-                await update.message.reply_text("Please provide a URL or a screenshot of your profile along with the package or custom order!")
-                return
+                if follows == 0 and likes == 0 and comments == 0:
+                    await update.message.reply_text("Specify at least one of follows, likes, or comments!")
+                    return
+                amount = (follows // 10 * pricing['followers'][platform]) + (likes // 10 * pricing['likes'][platform]) + (comments // 10 * pricing['comments'][platform])
 
-            try:
-                handle = profile_url.split('/')[-1] if profile_url else f"@{user_id}"
-                order_id = f"{user_id}_{int(time.time())}"
-                order_details = {
-                    'client_id': user_id,
-                    'handle': handle,
-                    'platform': platform,
-                    'follows_left': follows,
-                    'likes_left': likes,
-                    'comments_left': comments,
-                    'priority': False
-                }
-                if profile_url:
-                    order_details['profile_url'] = profile_url
-                if profile_image_id:
-                    order_details['profile_image_id'] = profile_image_id
+            # Process the order
+            handle = profile_url.split('/')[-1] if profile_url else parts[0]
+            order_id = f"{user_id}_{int(time.time())}"
+            order_details = {
+                'client_id': user_id,
+                'handle': handle,
+                'platform': platform,
+                'follows_left': follows,
+                'likes_left': likes,
+                'comments_left': comments,
+                'priority': False
+            }
+            if profile_url:
+                order_details['profile_url'] = profile_url
+            if profile_image_id:
+                order_details['profile_image_id'] = profile_image_id
 
-                users['clients'][user_id]['step'] = 'awaiting_payment'
-                users['clients'][user_id]['order_id'] = order_id
-                users['clients'][user_id]['amount'] = amount
-                users['clients'][user_id]['order_details'] = order_details
+            users['clients'][user_id]['step'] = 'awaiting_payment'
+            users['clients'][user_id]['order_id'] = order_id
+            users['clients'][user_id]['amount'] = amount
+            users['clients'][user_id]['order_details'] = order_details
 
-                payment_id = order_id
-                users.setdefault('pending_payments', {})[payment_id] = {
-                    'user_id': user_id,
-                    'client_id': user_id,
-                    'order_id': order_id,
-                    'order_details': order_details
-                }
-                if profile_image_id:
-                    users['pending_payments'][payment_id]['photo_id'] = profile_image_id
-                    await application.bot.send_photo(
-                        chat_id=ADMIN_GROUP_ID,
-                        photo=profile_image_id,
-                        caption=f"New order from {user_id} for {platform}. Amount: ₦{amount}\nFollows: {follows}, Likes: {likes}, Comments: {comments}"
-                    )
-                else:
-                    await application.bot.send_message(
-                        chat_id=ADMIN_GROUP_ID,
-                        text=f"New order from {user_id} for {platform}. Amount: ₦{amount}\nFollows: {follows}, Likes: {likes}, Comments: {comments}\nProfile URL: {profile_url}"
-                    )
-                await update.message.reply_text(
-                    f"Order placed! Total: ₦{amount} for {follows} follows, {likes} likes, {comments} comments on {platform}.\n"
-                    f"Use /pay to complete your payment, or /cancel to cancel your order."
+            payment_id = order_id
+            users.setdefault('pending_payments', {})[payment_id] = {
+                'user_id': user_id,
+                'client_id': user_id,
+                'order_id': order_id,
+                'order_details': order_details
+            }
+            if profile_image_id:
+                users['pending_payments'][payment_id]['photo_id'] = profile_image_id
+                await application.bot.send_photo(
+                    chat_id=ADMIN_GROUP_ID,
+                    photo=profile_image_id,
+                    caption=f"New order from {user_id} for {platform}. Amount: ₦{amount}\nFollows: {follows}, Likes: {likes}, Comments: {comments}"
                 )
-                await save_users()
-                logger.info(f"Order placed for user {user_id}: Order ID {order_id}, Amount ₦{amount}")
-            except Exception as e:
-                logger.error(f"Error processing order for user {user_id}: {str(e)}")
-                await update.message.reply_text("An error occurred while placing your order. Please try again or contact support.")
+            else:
+                await application.bot.send_message(
+                    chat_id=ADMIN_GROUP_ID,
+                    text=f"New order from {user_id} for {platform}. Amount: ₦{amount}\nFollows: {follows}, Likes: {likes}, Comments: {comments}\nProfile URL: {profile_url}"
+                )
+            await update.message.reply_text(
+                f"Order placed! Total: ₦{amount} for {follows} follows, {likes} likes, {comments} comments on {platform}.\n"
+                f"Use /pay to complete your payment, or /cancel to cancel your order."
+            )
+            await save_users()
+            logger.info(f"Order placed for user {user_id}: Order ID {order_id}, Amount ₦{amount}")
             return
         elif client_data['step'] == 'awaiting_payment':
             logger.info(f"User {user_id} is in awaiting_payment step, prompting for /pay")
