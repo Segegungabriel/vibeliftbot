@@ -762,7 +762,7 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"Admin Panel:\n"
         f"Withdrawal limit: ₦{WITHDRAWAL_LIMIT} (trial). Edit code to change.\n"
-        f"Pick an action:", 
+        f"Pick an action:",
         reply_markup=reply_markup
     )
     logger.info(f"Admin panel sent to user {user_id}")
@@ -1263,7 +1263,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = query.data
     logger.info(f"Button clicked by user {user_id}: {data}")
     await query.answer()
-    
+
     if data == "client":
         if user_id in users['clients']:
             client_data = users['clients'][user_id]
@@ -1306,7 +1306,37 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         logger.info(f"Sent platform selection to user {user_id}")
-    
+
+    elif data == "engager":
+        if user_id not in users['engagers']:
+            users['engagers'][user_id] = {
+                'earnings': 0,
+                'daily_tasks': {'count': 0, 'last_reset': time.time()},
+                'task_timers': {},
+                'claims': []
+            }
+            await save_users()
+            await query.edit_message_text(
+                "Welcome, Engager!\n"
+                "Earn cash by completing tasks.\n"
+                "Use /tasks to see available tasks or /balance to check earnings."
+            )
+            logger.info(f"User {user_id} joined as engager")
+        else:
+            await query.edit_message_text(
+                "You're already an engager!\n"
+                "Use /tasks to see available tasks or /balance to check earnings."
+            )
+
+    elif data == "help":
+        await query.edit_message_text(
+            "Need help?\n"
+            "- Clients: Boost your social media with /client.\n"
+            "- Engagers: Earn cash with /tasks.\n"
+            "- Contact support: [Your Support Link]"
+        )
+        logger.info(f"Help sent to user {user_id}")
+
     elif data.startswith("platform_"):
         platform = data.split("_")[1]
         users['clients'][user_id]['step'] = 'awaiting_order'
@@ -1327,21 +1357,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Custom limits: 10-500 per metric"
         )
         logger.info(f"User {user_id} selected platform {platform}, prompted for order")
-    elif data.startswith("platform_"):
-        platform = data.split("_")[1]
-        users['clients'][user_id]['step'] = 'awaiting_order'
-        users['clients'][user_id]['platform'] = platform
-        users['clients'][user_id]['order_type'] = 'bundle'  # Default, adjust if needed
-        await save_users()
-        await query.edit_message_text(
-            f"Selected {platform.capitalize()}!\n"
-            "Submit your order:\n"
-            "1. URL + Bundle: 'https://instagram.com/username starter'\n"
-            "2. Package + Screenshot: 'package pro' with photo\n"
-            "3. Custom + Screenshot: 'username, 20 follows, 30 likes, 20 comments' with photo"
-        )
-        logger.info(f"User {user_id} selected platform {platform}, prompted for order")
-    
+        
     # Add other button handlers (e.g., 'engager', 'help', 'admin_*') as needed
     # Rate limit check for button actions (5s default, 60s for signup actions)
     if not check_rate_limit(user_id_str, action=data, is_signup_action=data in ['client', 'engager', 'start']):
@@ -1783,50 +1799,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await application.bot.send_message(chat_id=user_id, text="Wrong code! Try again.")
         return
 
-    # Define package limits and pricing
-    package_limits = {
-        'followers': {
-            'instagram': {'min': 10, 'max': 500},
-            'facebook': {'min': 10, 'max': 500},
-            'tiktok': {'min': 10, 'max': 500},
-            'twitter': {'min': 10, 'max': 500}
-        },
-        'likes': {
-            'instagram': {'min': 10, 'max': 500},
-            'facebook': {'min': 10, 'max': 500},
-            'tiktok': {'min': 10, 'max': 500},
-            'twitter': {'min': 10, 'max': 500}
-        },
-        'comments': {
-            'instagram': {'min': 10, 'max': 500},
-            'facebook': {'min': 10, 'max': 500},
-            'tiktok': {'min': 10, 'max': 500},
-            'twitter': {'min': 10, 'max': 500}
-        },
-        'bundle': {
-            'instagram': {
-                'starter': {'follows': 10, 'likes': 20, 'comments': 5, 'price': 1890},
-                'pro': {'follows': 50, 'likes': 100, 'comments': 10, 'price': 8640},
-                'elite': {'follows': 100, 'likes': 200, 'comments': 50, 'price': 18900}
-            },
-            'facebook': {
-                'starter': {'follows': 10, 'likes': 20, 'comments': 5, 'price': 3240},
-                'pro': {'follows': 50, 'likes': 100, 'comments': 10, 'price': 15390},
-                'elite': {'follows': 100, 'likes': 200, 'comments': 50, 'price': 32400}
-            },
-            'tiktok': {
-                'starter': {'follows': 10, 'likes': 20, 'comments': 5, 'price': 3780},
-                'pro': {'follows': 50, 'likes': 100, 'comments': 10, 'price': 17280},
-                'elite': {'follows': 100, 'likes': 200, 'comments': 50, 'price': 37800}
-            },
-            'twitter': {
-                'starter': {'follows': 10, 'likes': 20, 'comments': 5, 'price': 2880},
-                'pro': {'follows': 50, 'likes': 100, 'comments': 10, 'price': 12780},
-                'elite': {'follows': 100, 'likes': 200, 'comments': 50, 'price': 28800}
-            }
-        }
-    }
-    pricing = {
+        pricing = {
         'followers': {
             'instagram': 120,  # Price per 10 followers
             'facebook': 150,
