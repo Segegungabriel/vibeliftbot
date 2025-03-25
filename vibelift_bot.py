@@ -43,12 +43,6 @@ users_collection = db.get_collection("users")  # Replace with your collection na
 # Initialize Flask app
 app = Flask(__name__)
 
-# Health check endpoint for Render
-@app.route('/', methods=['GET'])
-def health_check():
-    logger.info("Health check endpoint accessed")
-    return jsonify({"status": "Bot is running"}), 200
-
 # Global variables
 application = None
 users = None
@@ -1894,6 +1888,20 @@ async def process_updates():
             logger.error(f"Error processing update: {str(e)}")
 
 # Webhook routes
+@app.route('/webhook', methods=['POST'])
+async def webhook():
+    try:
+        update = Update.de_json(request.get_json(force=True), application.bot)
+        if update:
+            await application.process_update(update)
+            logger.info(f"Received and processed update: {update}")
+        else:
+            logger.warning("Received invalid update from Telegram")
+        return "OK", 200
+    except Exception as e:
+        logger.error(f"Error in webhook route: {str(e)}")
+        return "Error", 500
+
 @app.route('/reset-webhook', methods=['GET'])
 async def reset_webhook():
     try:
