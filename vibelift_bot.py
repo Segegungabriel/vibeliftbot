@@ -2059,7 +2059,7 @@ async def main():
         raise
 
     # Configure and run Uvicorn server
-    port = int(os.getenv("PORT", 10000))  # Use Render's default port 10000
+    port = int(os.getenv("PORT", 10000))
     try:
         config = uvicorn.Config(
             app=asgi_app,
@@ -2067,7 +2067,7 @@ async def main():
             port=port,
             log_level="info",
             loop="asyncio",
-            workers=1  # Single worker to avoid async issues
+            workers=1
         )
         logger.info(f"Uvicorn config created for host 0.0.0.0, port {port}")
     except Exception as e:
@@ -2084,7 +2084,6 @@ async def main():
         logger.error(f"Failed to start Uvicorn server: {str(e)}")
         raise
 
-# Run the main function
 if __name__ == "__main__":
     try:
         asyncio.run(main())
