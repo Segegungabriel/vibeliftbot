@@ -42,6 +42,7 @@ users_collection = db.get_collection("users")  # Replace with your collection na
 
 # Initialize Flask app
 app = Flask(__name__)
+user_last_command = {}
 
 # Global variables
 application = None
@@ -82,57 +83,67 @@ async def save_users():
         raise
 
 # Rate limiting function
-def check_rate_limit(user_id, is_signup_action=False, action=None):
+def check_rate_limit(user_id: str, action: str, cooldown: int = 5) -> bool:
     current_time = time.time()
-    # Skip rate limiting for /start (handled separately in start function)
-    if action == 'start':
-        return True
-    last_command_time = user_last_command.get(user_id, 0)
-    if current_time - last_command_time < RATE_LIMIT:
+    key = f"{user_id}_{action}"
+    last_command_time = user_last_command.get(key, 0)
+    if current_time - last_command_time < cooldown:
         return False
-    user_last_command[user_id] = current_time
+    user_last_command[key] = current_time
     return True
 
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error(f"Update {update} caused error {context.error}")
+    if update and update.effective_chat:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="An error occurred while processing your request. Please try again or contact support."
+        )
+
+# In the main function:
+application.add_error_handler(error_handler)
+
 # Command handlers
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Received /start command from user {update.effective_user.id}")
-    user_id = update.effective_user.id
-    user_id_str = str(user_id)
-    args = context.args
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.effective_user.id)
+    logger.info(f"Received /start command from user {user_id}")
 
-    # Check for payment success
-    if args and args[0].startswith("payment_success_"):
-        order_id = args[0].split("payment_success_")[1]
-        if order_id in users.get("active_orders", {}):
-            await update.message.reply_text(
-                f"🎉 Payment successful! Your order (ID: {order_id}) is now active. Check progress with /status."
-            )
-        else:
-            await update.message.reply_text(
-                "⚠️ Payment confirmation is still processing. Please wait a moment or use /status to check."
-            )
+    if not check_rate_limit(user_id, action='start'):
+        logger.info(f"User {user_id} is rate-limited for /start")
+        await update.message.reply_text("Please wait a moment before trying again!")
         return
 
-    # Use a more lenient rate limit for /start (e.g., 5 seconds)
-    current_time = time.time()
-    last_start_time = user_last_command.get(f"{user_id}_start", 0)
-    if current_time - last_start_time < 5:  # 5-second rate limit for /start
-        logger.info(f"Rate limit hit for /start from user {user_id}")
-        return
-    user_last_command[f"{user_id}_start"] = current_time
+    try:
+        # Check for payment success
+        args = context.args
+        if args and args[0].startswith("payment_success_"):
+            order_id = args[0].split("payment_success_")[1]
+            if order_id in users.get("active_orders", {}):
+                await update.message.reply_text(
+                    f"🎉 Payment successful! Your order (ID: {order_id}) is now active. Check progress with /status."
+                )
+            else:
+                await update.message.reply_text(
+                    "⚠️ Payment confirmation is still processing. Please wait a moment or use /status to check."
+                )
+            return
 
-    keyboard = [
-        [InlineKeyboardButton("Join as Client", callback_data='client')],
-        [InlineKeyboardButton("Join as Engager", callback_data='engager')],
-        [InlineKeyboardButton("Help", callback_data='help')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        "Welcome to VibeLiftBot! 🚀\n"
-        "Boost your social media or earn cash by engaging.\n"
-        "Pick your role:", reply_markup=reply_markup
-    )
-    logger.info(f"Sent /start response to user {user_id}")
+        # Send welcome message with inline keyboard
+        keyboard = [
+            [InlineKeyboardButton("Join as Client", callback_data='client')],
+            [InlineKeyboardButton("Join as Engager", callback_data='engager')],
+            [InlineKeyboardButton("Help", callback_data='help')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "Welcome to VibeLiftBot! 🚀\n"
+            "Boost your social media or earn cash by engaging.\n"
+            "Pick your role:", reply_markup=reply_markup
+        )
+        logger.info(f"Sent /start response to user {user_id}")
+    except Exception as e:
+        logger.error(f"Error in /start for user {user_id}: {str(e)}")
+        await update.message.reply_text("An error occurred. Please try again or contact support.")
 
 async def client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
@@ -181,48 +192,54 @@ async def client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logger.error(f"Error in /client for user {user_id}: {str(e)}")
         await message.reply_text("An error occurred while starting your order. Please try again or contact support.")
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.effective_user.id)
-    logger.info(f"Received /cancel command from user {user_id}")
 
-    if not check_rate_limit(user_id, action='cancel'):
-        logger.info(f"User {user_id} is rate-limited for /cancel")
-        await update.message.reply_text("Hang on a sec and try again!")
+async def client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.effective_user.id)
+    logger.info(f"Received /client command from user {user_id}")
+    
+    if update.callback_query:
+        message = update.callback_query.message
+        await update.callback_query.answer()
+    else:
+        message = update.message
+
+    if not check_rate_limit(user_id, action='client'):
+        logger.info(f"User {user_id} is rate-limited for /client")
+        await message.reply_text("Hang on a sec and try again!")
         return
 
     try:
-        # Check if the user is a client
         if user_id in users['clients']:
             client_data = users['clients'][user_id]
-            if client_data['step'] in ['select_platform', 'awaiting_order', 'awaiting_payment']:
-                # If the user has a pending payment, remove it
-                if client_data['step'] == 'awaiting_payment' and 'order_id' in client_data:
-                    order_id = client_data['order_id']
-                    if order_id in users.get('pending_payments', {}):
-                        del users['pending_payments'][order_id]
-                        logger.info(f"Removed pending payment {order_id} for user {user_id}")
-            
-            # Remove the user from clients
-            del users['clients'][user_id]
-            await save_users()
-            logger.info(f"User {user_id} canceled their client order")
-            await update.message.reply_text("Your order has been canceled. Start a new order with /client!")
-            return
+            if client_data['step'] == 'completed':
+                logger.info(f"User {user_id} has a completed order")
+                await message.reply_text("Your order is active! Results in 4-5 hours for small orders.")
+                return
+            elif client_data['step'] == 'awaiting_payment':
+                logger.info(f"User {user_id} has an order awaiting payment")
+                await message.reply_text("You have an order awaiting payment. Use /pay to complete it, or /cancel to start over!")
+                return
+            else:
+                logger.info(f"User {user_id} is already a client, current step: {client_data['step']}")
+                await message.reply_text("You’re already a client! Reply with your order or use /pay.")
+                return
 
-        # Check if the user is an engager with a pending payout
-        if user_id in users['engagers'] and users['engagers'][user_id].get('awaiting_payout', False):
-            users['engagers'][user_id]['awaiting_payout'] = False
-            await save_users()
-            logger.info(f"User {user_id} canceled their payout request")
-            await update.message.reply_text("Your payout request has been canceled. Use /withdraw to start a new request.")
-            return
-
-        # If the user has no active order or payout to cancel
-        logger.info(f"User {user_id} has nothing to cancel")
-        await update.message.reply_text("You don’t have an active order or payout to cancel.")
+        users['clients'][user_id] = {'step': 'select_platform'}
+        keyboard = [
+            [InlineKeyboardButton("Instagram", callback_data='platform_instagram')],
+            [InlineKeyboardButton("Facebook", callback_data='platform_facebook')],
+            [InlineKeyboardButton("TikTok", callback_data='platform_tiktok')],
+            [InlineKeyboardButton("Twitter", callback_data='platform_twitter')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await message.reply_text(
+            "Boost your social media! First, select a platform:", reply_markup=reply_markup
+        )
+        await save_users()
+        logger.info(f"Sent platform selection prompt to user {user_id}")
     except Exception as e:
-        logger.error(f"Error in /cancel for user {user_id}: {str(e)}")
-        await update.message.reply_text("An error occurred while canceling. Please try again or contact support.")
+        logger.error(f"Error in /client for user {user_id}: {str(e)}")
+        await message.reply_text("An error occurred while starting your order. Please try again or contact support.")
 
 async def order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
@@ -274,7 +291,7 @@ async def order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logger.error(f"Error in /order for user {user_id}: {str(e)}")
         await update.message.reply_text("An error occurred while checking your order. Please try again or contact support.")
-        
+
 async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     if update.callback_query:
