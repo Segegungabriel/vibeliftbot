@@ -101,6 +101,9 @@ async def save_users():
 # Rate limiting function
 def check_rate_limit(user_id, is_signup_action=False, action=None):
     current_time = time.time()
+    # Skip rate limiting for /start (handled separately in start function)
+    if action == 'start':
+        return True
     last_command_time = user_last_command.get(user_id, 0)
     if current_time - last_command_time < RATE_LIMIT:
         return False
@@ -114,6 +117,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id_str = str(user_id)
     args = context.args
 
+    # Check for payment success
     if args and args[0].startswith("payment_success_"):
         order_id = args[0].split("payment_success_")[1]
         if order_id in users.get("active_orders", {}):
@@ -126,9 +130,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    if not check_rate_limit(user_id, is_signup_action=True):
-        await update.message.reply_text("Hang on a sec and try again!")
+    # Use a more lenient rate limit for /start (e.g., 5 seconds)
+    current_time = time.time()
+    last_start_time = user_last_command.get(f"{user_id}_start", 0)
+    if current_time - last_start_time < 5:  # 5-second rate limit for /start
+        logger.info(f"Rate limit hit for /start from user {user_id}")
         return
+    user_last_command[f"{user_id}_start"] = current_time
+
     keyboard = [
         [InlineKeyboardButton("Join as Client", callback_data='client')],
         [InlineKeyboardButton("Join as Engager", callback_data='engager')],
@@ -325,6 +334,13 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     order_id = users['clients'][user_id_str]['order_id']
     try:
         payment_url = await initiate_payment(user_id_str, amount, order_id)
+        # Store the payment in pending_payments
+        users.setdefault("pending_payments", {})[order_id] = {
+            "user_id": user_id_str,
+            "order_details": users['clients'][user_id_str]['order_details']
+        }
+        logger.info(f"Added to pending_payments: {order_id} for user {user_id_str}")
+        await save_users()  # Save to MongoDB
         keyboard = [
             [InlineKeyboardButton(f"Pay ₦{amount}", url=payment_url)],
             [InlineKeyboardButton("Cancel Order", callback_data='cancel')],
@@ -349,6 +365,10 @@ async def payment_success():
 async def payment_callback():
     global users
     try:
+        # Reload users from MongoDB to ensure we have the latest data
+        users = await load_users()
+        logger.info(f"Users loaded in payment_callback: pending_payments={users.get('pending_payments', {})}")
+
         data = request.get_json()
         logger.info(f"Payment callback received: {data}")
         event = data.get("event")
@@ -1123,40 +1143,80 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await handle_withdraw_button(update, context)
         elif data == 'admin_stats':
             await handle_admin_stats_button(query, user_id_str)
-        elif data == 'admin_audit':
-            await handle_admin_audit_button(query, user_id_str)
-        elif data == 'admin_view_withdrawals':
-            await handle_admin_view_withdrawals_button(query, user_id_str)
-        elif data == 'admin_view_payments':
-            await handle_admin_view_payments_button(query, user_id, user_id_str)
-        elif data == 'admin_pending':
-            await handle_admin_pending_button(query, user_id_str)
-        elif data == 'admin_clear_pending':
-            await handle_admin_clear_pending_button(update, context)
-        elif data == 'admin_view_tasks':
-            await handle_admin_view_tasks_button(update, context)
-        elif data == 'admin_set_priority':
-            await handle_admin_set_priority_button(update, context)
-        elif data == 'back_to_admin':
-            await handle_back_to_admin_button(query, user_id_str)
-        elif data.startswith('approve_payout_'):
-            await handle_approve_payout_button(query, user_id, user_id_str, data)
-        elif data.startswith('reject_payout_'):
-            await handle_reject_payout_button(query, user_id, user_id_str, data)
-        elif data.startswith('approve_payment_'):
-            await handle_approve_payment_button(query, user_id, user_id_str, data)
-        elif data.startswith('reject_payment_'):
-            await handle_reject_payment_button(query, user_id, user_id_str, data)
-        elif data.startswith('set_priority_'):
-            await handle_set_priority_button(query, user_id_str, data)
-        elif data == 'cancel':
-            await handle_cancel_button(query, user_id_str)
-        else:
-            await query.message.reply_text("Unknown action. Please try again.")
-    except Exception as e:
-        logger.error(f"Error in button handler for callback_data '{data}': {e}")
-        await query.message.reply_text("An error occurred. Please try again or contact support.")
-
+            elif data == 'admin_audit':
+        if str(query.message.chat_id) != ADMIN_GROUP_ID or user_id != int(ADMIN_USER_ID):
+            return
+        await query.message.edit_text(
+            "Reply with: <engager_id> <order_id> [reason]\nExample: 1518439839 1518439839_1742633918 Invalid proof",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]])
+        )
+        await save_users()  # Add await
+    elif data == 'admin_view_withdrawals':
+        if str(query.message.chat_id) != ADMIN_GROUP_ID or user_id != int(ADMIN_USER_ID):
+            return
+        withdrawals = []
+        for user_id_str, user_data in users['engagers'].items():
+            if user_data.get('awaiting_payout'):
+                withdrawals.append(f"User {user_id_str}: ₦{user_data['earnings']}")
+        message = "Pending Withdrawals:\n" + "\n".join(withdrawals) if withdrawals else "No pending withdrawals."
+        await query.message.edit_text(
+            message,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]])
+        )
+        await save_users()  # Add await
+    elif data == 'admin_view_payments':
+        if str(query.message.chat_id) != ADMIN_GROUP_ID or user_id != int(ADMIN_USER_ID):
+            return
+        payments = []
+        for payment_id, payment in users.get('pending_payments', {}).items():
+            payments.append(f"Payment {payment_id}: User {payment['user_id']}")
+        message = "Pending Payments:\n" + "\n".join(payments) if payments else "No pending payments."
+        await query.message.edit_text(
+            message,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]])
+        )
+        await save_users()  # Add await
+    elif data == 'admin_pending':
+        if str(query.message.chat_id) != ADMIN_GROUP_ID or user_id != int(ADMIN_USER_ID):
+            return
+        pending = users.get('pending_admin_actions', {})
+        message = "Pending Admin Actions:\n" + "\n".join([f"Task {task_id}: {task}" for task_id, task in pending.items()]) if pending else "No pending admin actions."
+        await query.message.edit_text(
+            message,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]])
+        )
+        await save_users()  # Add await
+    elif data == 'admin_clear_pending':
+        if str(query.message.chat_id) != ADMIN_GROUP_ID or user_id != int(ADMIN_USER_ID):
+            return
+        await query.message.edit_text(
+            "Clear Pending Tasks:\nReply with the format:\n- `payment <payment_id>` to clear a pending payment\n- `payout <payout_id>` to clear a pending payout\n- `order <order_id>` to clear an active order\nExample: `payment 1234567890_1699999999`\n\n" +
+            ("Active Orders:\n" + "\n".join([f"Order {order_id}" for order_id in users.get('active_orders', {}).keys()]) if users.get('active_orders') else "No active orders.") + "\n\n" +
+            ("Pending Payments:\n" + "\n".join([f"Payment {payment_id}" for payment_id in users.get('pending_payments', {}).keys()]) if users.get('pending_payments') else "No pending payments.") + "\n\n" +
+            ("Pending Payouts:\n" + "\n".join([f"Payout {user_id}" for user_id, user_data in users['engagers'].items() if user_data.get('awaiting_payout')]) if any(user_data.get('awaiting_payout') for user_data in users['engagers'].values()) else "No pending payouts."),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]])
+        )
+        await save_users()
+    elif data == 'admin_view_tasks':
+        if str(query.message.chat_id) != ADMIN_GROUP_ID or user_id != int(ADMIN_USER_ID):
+            return
+        tasks = []
+        for order_id, order in users.get('active_orders', {}).items():
+            tasks.append(f"Order {order_id}: {order['platform']} - {order['handle']}")
+        message = "Active Tasks:\n" + "\n".join(tasks) if tasks else "No active tasks."
+        await query.message.edit_text(
+            message,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]])
+        )
+        await save_users()  # Add await
+    elif data == 'admin_set_priority':
+        if str(query.message.chat_id) != ADMIN_GROUP_ID or user_id != int(ADMIN_USER_ID):
+            return
+        await query.message.edit_text(
+            "Set Task Priority:\nReply with: <order_id> <priority>\nExample: 1234567890_1699999999 1",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back to Admin Menu", callback_data='back_to_admin')]])
+        )
+        await save_users()  # Add await
 
 # Balance command
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
