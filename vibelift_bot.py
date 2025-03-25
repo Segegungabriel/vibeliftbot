@@ -5,9 +5,10 @@ import requests
 import asyncio
 import uvicorn
 from typing import Dict, Any
-from motor.motor_asyncio import AsyncIOMotorClient  # Use async MongoDB client
+from motor.motor_asyncio import AsyncIOMotorClient  # Use async MongoDB
 from flask import Flask, request, send_file
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from dotenv import load_dotenv
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, CallbackQuery  # Add CallbackQuery
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -16,6 +17,9 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -31,7 +35,7 @@ if not BOT_TOKEN:
 ADMIN_USER_ID = os.getenv("ADMIN_USER_ID")
 ADMIN_GROUP_ID = os.getenv("ADMIN_GROUP_ID")
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
-WEBHOOK_URL = "https://vibeliftbot.onrender.com/webhook"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "https://vibeliftbot.onrender.com/webhook"
 WITHDRAWAL_LIMIT = 5000
 
 # Paystack headers
@@ -55,7 +59,7 @@ users_collection = db['users']
 # Flask app
 app = Flask(__name__)
 
-# Global variables (will be set in main)
+# Global variables
 application = None
 users = None
 
@@ -102,7 +106,7 @@ def check_rate_limit(user_id, is_signup_action=False, action=None):
     user_last_command[user_id] = current_time
     return True
 
-# Command handlers (unchanged except for async consistency)
+# Command handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Received /start command from user {update.effective_user.id}")
     user_id = update.effective_user.id
@@ -283,11 +287,10 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply_markup = InlineKeyboardMarkup(keyboard)
     await message.reply_text("Available Tasks:", reply_markup=reply_markup)
 
-# Pay command and Flask routes
 async def initiate_payment(user_id: str, amount: int, order_id: str) -> str:
     try:
         headers = {
-            "Authorization": f"Bearer {os.getenv('PAYSTACK_SECRET_KEY')}",
+            "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
             "Content-Type": "application/json"
         }
         data = {
@@ -840,7 +843,7 @@ async def handle_task_button(query: CallbackQuery, user_id: int, user_id_str: st
     task_parts = data.split('_', 2)
     task_type = task_parts[1]
     order_id = task_parts[2]
-    logger.info(f"Task claim attempt: user={user_id}, order_id={order_id}, active_orders={users['active_orders']}")
+    logger.info(f"Task button clicked: user={user_id}, order_id={order_id}, active_orders={users['active_orders']}")
     if order_id not in users['active_orders']:
         await query.message.edit_text("Task no longer available!")
         return
@@ -858,26 +861,25 @@ async def handle_task_button(query: CallbackQuery, user_id: int, user_id_str: st
     claims = user_data.get('claims', [])
     for claim in claims:
         if claim['order_id'] == order_id and claim['task_type'] == task_type and claim['status'] == 'approved':
-            task_name = {'f': 'Follow', 'l': 'Like', 'c': 'Comment'}.get(task_type, 'Task')
-            await query.message.edit_text(f"You’ve already done the {task_name} task for this order!")
+            task_name = {'f': 'follow', 'l': 'like', 'c': 'comment'}.get(task_type, 'task')
+            await query.message.edit_text(f"You've already done the {task_name} task for this order!")
             return
     timer_key = f"{order_id}_{task_type}"
     if 'tasks_per_order' not in user_data:
         user_data['tasks_per_order'] = {}
     users['engagers'][user_id_str]['task_timers'][timer_key] = time.time()
     if task_type == 'f':
-        await query.message.edit_text(f"Follow {order['handle']} on {order['platform']}.\nSend a screenshot here to earn!")
-    elif task_type == 'l':
-        if order.get('use_recent_posts'):
-            await query.message.edit_text(f"Like the 3 latest posts by {order['handle']} on {order['platform']}.\nSpend 60 seconds on each, then send a screenshot here!")
-        else:
-            await query.message.edit_text(f"Like this post: {order['like_url']}\nSpend 60 seconds, then send a screenshot here!")
+        await query.message.edit_text(f"Follow {order['handle']} on {order['platform']}. Send a screenshot here to earn!")
+    elif order.get('use_recent_posts'):
+        await query.message.edit_text(f"Like the 3 latest posts by {order['handle']} on {order['platform']}. Spend 60 seconds on each, then send a screenshot here!")
+    else:
+        await query.message.edit_text(f"Like this post: {order['like_url']}. Spend 60 seconds, then send a screenshot here!")
     elif task_type == 'c':
         if order.get('use_recent_posts'):
-            await query.message.edit_text(f"Comment on the 3 latest posts by {order['handle']} on {order['platform']}.\nSpend 60 seconds on each, then send a screenshot here!")
+            await query.message.edit_text(f"Comment on the 3 latest posts by {order['handle']} on {order['platform']}. Spend 60 seconds on each, then send a screenshot here!")
         else:
-            await query.message.edit_text(f"Comment on this post: {order['comment_url']}\nSpend 60 seconds, then send a screenshot here!")
-    save_users()
+            await query.message.edit_text(f"Comment on the post: {order['comment_url']}. Spend 60 seconds, then send a screenshot here!")
+    await save_users()
 
 async def handle_tasks_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await tasks(update, context)
