@@ -1,4 +1,5 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
+# Imports
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -31,14 +32,14 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 MONGODB_URI = os.getenv("MONGODB_URI")
-ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", 0))  # Replace with your admin user ID
-ADMIN_GROUP_ID = os.getenv("ADMIN_GROUP_ID", "")  # Replace with your admin group ID
-OPAY_ACCOUNT = os.getenv("OPAY_ACCOUNT", "")  # Replace with your OPAY account number
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", 0))
+ADMIN_GROUP_ID = os.getenv("ADMIN_GROUP_ID", "")
+OPAY_ACCOUNT = os.getenv("OPAY_ACCOUNT", "")
 
 # Initialize MongoDB client
 client = AsyncIOMotorClient(MONGODB_URI)
-db = client.get_database("vibeliftbot")  # Replace with your database name
-users_collection = db.get_collection("users")  # Replace with your collection name
+db = client.get_database("vibeliftbot")
+users_collection = db.get_collection("users")
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -94,81 +95,28 @@ def check_rate_limit(user_id: str, action: str, cooldown: int = 5) -> bool:
 
 
 # Command handlers
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.effective_user.id)
-    logger.info(f"Received /start command from user {user_id}")
-
-    if not check_rate_limit(user_id, action='start'):
-        logger.info(f"User {user_id} is rate-limited for /start")
-        await update.message.reply_text("Please wait a moment before trying again!")
-        return
-
-    try:
-        # Check for payment success
-        args = context.args
-        if args and args[0].startswith("payment_success_"):
-            order_id = args[0].split("payment_success_")[1]
-            if order_id in users.get("active_orders", {}):
-                await update.message.reply_text(
-                    f"🎉 Payment successful! Your order (ID: {order_id}) is now active. Check progress with /status."
-                )
-            else:
-                await update.message.reply_text(
-                    "⚠️ Payment confirmation is still processing. Please wait a moment or use /status to check."
-                )
-            return
-
-        # Send welcome message with inline keyboard
-        keyboard = [
-            [InlineKeyboardButton("Join as Client", callback_data='client')],
-            [InlineKeyboardButton("Join as Engager", callback_data='engager')],
-            [InlineKeyboardButton("Help", callback_data='help')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            "Welcome to VibeLiftBot! 🚀\n"
-            "Boost your social media or earn cash by engaging.\n"
-            "Pick your role:", reply_markup=reply_markup
-        )
-        logger.info(f"Sent /start response to user {user_id}")
-    except Exception as e:
-        logger.error(f"Error in /start for user {user_id}: {str(e)}")
-        await update.message.reply_text("An error occurred. Please try again or contact support.")
-
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     logger.info(f"Received /cancel command from user {user_id}")
-
     if not check_rate_limit(user_id, action='cancel'):
         logger.info(f"User {user_id} is rate-limited for /cancel")
         await update.message.reply_text("Please wait a moment before trying again!")
         return
-
     try:
-        # Check if the user is a client with an active order
         if user_id in users['clients']:
             client_data = users['clients'][user_id]
             order_id = client_data.get('order_id')
-            
-            # Remove the order from pending_payments if it exists
             if order_id and order_id in users.get('pending_payments', {}):
                 del users['pending_payments'][order_id]
-            
-            # Remove the order from active_orders if it exists
             if order_id and order_id in users.get('active_orders', {}):
                 del users['active_orders'][order_id]
-            
-            # Remove the user from clients
             del users['clients'][user_id]
             await save_users()
-            
             await update.message.reply_text(
                 "Your order has been canceled. Start a new order with /client if you’d like!"
             )
             logger.info(f"User {user_id} canceled their order")
             return
-
-        # Check if the user is an engager with active tasks
         if user_id in users.get('engagers', {}):
             engager_data = users['engagers'][user_id]
             if 'task_timers' in engager_data and engager_data['task_timers']:
@@ -179,8 +127,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 )
                 logger.info(f"User {user_id} canceled their active tasks")
                 return
-
-        # If no active order or tasks, inform the user
         await update.message.reply_text(
             "You don’t have any active orders or tasks to cancel."
         )
@@ -334,6 +280,14 @@ async def order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as e:
         logger.error(f"Error in /order for user {user_id}: {str(e)}")
         await update.message.reply_text("An error occurred while checking your order. Please try again or contact support.")
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error(f"Update {update} caused error {context.error}")
+    if update and update.effective_chat:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="An error occurred while processing your request. Please try again or contact support."
+        )
 
 async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
@@ -2025,43 +1979,66 @@ async def reset_webhook():
         logger.error(f"Error resetting webhook: {str(e)}")
         return f"Error resetting webhook: {str(e)}", 500
 
-@app.route('/')
-async def health_check():
-    return "Service is running", 200
+
+@app.route('/', methods=['GET'])
+def health_check():
+    logger.info("Health check endpoint accessed")
+    return jsonify({"status": "Bot is running"}), 200
 
 # Main function
 async def main():
     global application, users
     logger.info("Starting bot...")
 
+    # Validate environment variables
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN is not set. Please set the environment variable.")
+        raise ValueError("BOT_TOKEN is not set")
+    if not WEBHOOK_URL:
+        logger.error("WEBHOOK_URL is not set. Please set the environment variable.")
+        raise ValueError("WEBHOOK_URL is not set")
+    if not MONGODB_URI:
+        logger.error("MONGODB_URI is not set. Please set the environment variable.")
+        raise ValueError("MONGODB_URI is not set")
+
     # Initialize the Telegram application
-    application = Application.builder().token(BOT_TOKEN).build()
+    try:
+        application = Application.builder().token(BOT_TOKEN).build()
+        logger.info("Telegram application initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize Telegram application: {str(e)}")
+        raise
 
     # Add handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("client", client))
-    application.add_handler(CommandHandler("engager", engager))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("pay", pay))
-    application.add_handler(CommandHandler("status", status))
-    application.add_handler(CommandHandler("tasks", tasks))
-    application.add_handler(CommandHandler("balance", balance))
-    application.add_handler(CommandHandler("withdraw", withdraw))
-    application.add_handler(CommandHandler("admin", admin))
-    application.add_handler(CommandHandler("cancel", cancel))  # Now references the defined cancel function
-    application.add_handler(CommandHandler("order", order))
-    application.add_handler(CallbackQueryHandler(button))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_message))
-    application.add_error_handler(error_handler)
+    try:
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("client", client))
+        application.add_handler(CommandHandler("engager", engager))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("pay", pay))
+        application.add_handler(CommandHandler("status", status))
+        application.add_handler(CommandHandler("tasks", tasks))
+        application.add_handler(CommandHandler("balance", balance))
+        application.add_handler(CommandHandler("withdraw", withdraw))
+        application.add_handler(CommandHandler("admin", admin))
+        application.add_handler(CommandHandler("cancel", cancel))
+        application.add_handler(CommandHandler("order", order))
+        application.add_handler(CallbackQueryHandler(button))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        application.add_handler(MessageHandler(filters.PHOTO, handle_message))
+        application.add_error_handler(error_handler)
+        logger.info("All handlers added successfully")
+    except Exception as e:
+        logger.error(f"Failed to add handlers: {str(e)}")
+        raise
 
-    # Load users
+    # Load users from MongoDB
     try:
         users = await load_users()
         logger.info("Users loaded successfully")
     except Exception as e:
         logger.error(f"Failed to load users: {str(e)}")
-        return
+        raise
 
     # Initialize the application
     try:
@@ -2069,7 +2046,7 @@ async def main():
         logger.info("Application initialized")
     except Exception as e:
         logger.error(f"Failed to initialize application: {str(e)}")
-        return
+        raise
 
     # Set the webhook
     try:
@@ -2077,26 +2054,36 @@ async def main():
         logger.info(f"Webhook set to {WEBHOOK_URL}")
     except Exception as e:
         logger.error(f"Failed to set webhook: {str(e)}")
-        return
+        raise
 
     # Wrap Flask app in WsgiToAsgi for ASGI compatibility
-    asgi_app = WsgiToAsgi(app)
-
-    # Run Uvicorn server
-    port = int(os.getenv("PORT", 10000))  # Use Render's default port 10000
-    config = uvicorn.Config(
-        app=asgi_app,
-        host="0.0.0.0",
-        port=port,
-        log_level="info",
-        loop="asyncio",
-        workers=1  # Single worker to avoid async issues
-    )
-    logger.info(f"Starting Uvicorn server on host 0.0.0.0, port {port}")
-    server = uvicorn.Server(config)
-
-    # Start the server
     try:
+        asgi_app = WsgiToAsgi(app)
+        logger.info("Flask app wrapped in WsgiToAsgi")
+    except Exception as e:
+        logger.error(f"Failed to wrap Flask app in WsgiToAsgi: {str(e)}")
+        raise
+
+    # Configure and run Uvicorn server
+    port = int(os.getenv("PORT", 10000))  # Use Render's default port 10000
+    try:
+        config = uvicorn.Config(
+            app=asgi_app,
+            host="0.0.0.0",
+            port=port,
+            log_level="info",
+            loop="asyncio",
+            workers=1  # Single worker to avoid async issues
+        )
+        logger.info(f"Uvicorn config created for host 0.0.0.0, port {port}")
+    except Exception as e:
+        logger.error(f"Failed to create Uvicorn config: {str(e)}")
+        raise
+
+    # Start the Uvicorn server
+    try:
+        server = uvicorn.Server(config)
+        logger.info("Uvicorn server instance created")
         await server.serve()
         logger.info("Uvicorn server is running")
     except Exception as e:
