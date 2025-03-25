@@ -1519,8 +1519,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def process_updates():
     while True:
-        update = await application.update_queue.get()
-        await application.process_update(update)
+        try:
+            update = await application.update_queue.get()
+            logger.info(f"Processing update: {update}")
+            await application.process_update(update)
+            logger.info(f"Successfully processed update: {update}")
+        except Exception as e:
+            logger.error(f"Error processing update: {str(e)}")
 
 def start_update_processing():
     import asyncio
@@ -1529,11 +1534,33 @@ def start_update_processing():
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    import asyncio
-    asyncio.run(application.update_queue.put(update))
-    return "OK", 200
-
+    try:
+        update = Update.de_json(request.get_json(force=True), application.bot)
+        if update:
+            application.update_queue.put_nowait(update)  # Synchronously put the update in the queue
+            logger.info(f"Received update: {update}")
+        else:
+            logger.warning("Received invalid update from Telegram")
+        return "OK", 200
+    except Exception as e:
+        logger.error(f"Error in webhook route: {str(e)}")
+        return "Error", 500
+@app.route('/reset-webhook', methods=['GET'])
+def reset_webhook():
+    try:
+        import asyncio
+        loop = asyncio.get_event_loop()
+        # Delete the existing webhook
+        loop.run_until_complete(application.bot.delete_webhook())
+        logger.info("Deleted existing webhook")
+        # Set the webhook again
+        webhook_url = "https://vibeliftbot.onrender.com/webhook"
+        loop.run_until_complete(application.bot.set_webhook(webhook_url))
+        logger.info(f"Webhook reset to {webhook_url}")
+        return "Webhook reset successfully", 200
+    except Exception as e:
+        logger.error(f"Error resetting webhook: {str(e)}")
+        return f"Error resetting webhook: {str(e)}", 500
 # Main function
 # Define application as a global variable
 application = None
@@ -1569,8 +1596,6 @@ def main():
     start_update_processing()
 
     # Start Flask app
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8443)))
-
 @app.route('/')
 def health_check():
     return "Service is running", 200
