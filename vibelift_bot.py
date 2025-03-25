@@ -13,8 +13,9 @@ import time
 import asyncio
 from flask import Flask, request, jsonify
 import uvicorn
-from asgiref.wsgi import WsgiToAsgi  # Correct import
+from asgiref.wsgi import WsgiToAsgi
 from pymongo import MongoClient
+from dotenv import load_dotenv  # Add this import
 
 # Load environment variables
 load_dotenv()
