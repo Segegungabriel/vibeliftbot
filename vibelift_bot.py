@@ -1264,7 +1264,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info(f"Button clicked by user {user_id}: {data}")
     await query.answer()
 
-    async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     user_id = str(query.from_user.id)
     data = query.data
