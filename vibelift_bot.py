@@ -291,6 +291,8 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
+    logger.info(f"Received /engager command from user {user_id}")
+    await update.message.reply_text("Engager functionality coming soon!")
     if update.callback_query:
         message = update.callback_query.message
         await update.callback_query.answer()
@@ -648,49 +650,41 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return "Method not allowed", 405
 
 # Status command
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
-    if not check_rate_limit(user_id, action='status'):
-        await update.message.reply_text("Hang on a sec and try again!")
+    logger.info(f"Received /start command from user {user_id}")
+    if not check_rate_limit(user_id, action='start'):
+        logger.info(f"User {user_id} is rate-limited for /start")
+        await update.message.reply_text("Please wait a moment before trying again!")
         return
-    if user_id not in users['clients']:
-        await update.message.reply_text("You haven't placed an order yet. Start with /client!")
-        return
-    client_data = users['clients'][user_id]
-    step = client_data['step']
-    if step == 'select_platform':
-        await update.message.reply_text("You're in the process of selecting a platform. Reply with your choice!")
-    elif step == 'awaiting_order':
-        await update.message.reply_text("You're in the process of placing an order. Reply with: `handle package` (e.g., @NaijaFashion 50).")
-    elif step == 'awaiting_payment':
-        order_id = client_data['order_id']
-        amount = client_data['amount']
-        if order_id in users['pending_payments']:
-            await update.message.reply_text(
-                f"Your order (ID: {order_id}) is awaiting admin approval for payment of ₦{amount}."
-            )
-        else:
-            await update.message.reply_text(
-                f"Your order (ID: {order_id}) is awaiting payment of ₦{amount}. Use /pay to complete it!"
-            )
-    elif step == 'completed':
-        order_id = client_data['order_id']
-        if order_id in users['active_orders']:
-            order = users['active_orders'][order_id]
-            message = (
-                f"Order Status (ID: {order_id}):\n"
-                f"Handle: {order['handle']}\n"
-                f"Platform: {order['platform']}\n"
-                f"Follows Remaining: {order.get('follows_left', 0)}\n"
-                f"Likes Remaining: {order.get('likes_left', 0)}\n"
-                f"Comments Remaining: {order.get('comments_left', 0)}\n"
-                f"Priority: {'Yes' if order.get('priority', False) else 'No'}"
-            )
-            await update.message.reply_text(message)
-        else:
-            await update.message.reply_text(
-                f"Your order (ID: {order_id}) is complete! Start a new order with /client."
-            )
+    try:
+        args = context.args
+        if args and args[0].startswith("payment_success_"):
+            order_id = args[0].split("payment_success_")[1]
+            if order_id in users.get("active_orders", {}):
+                await update.message.reply_text(
+                    f"🎉 Payment successful! Your order (ID: {order_id}) is now active. Check progress with /status."
+                )
+            else:
+                await update.message.reply_text(
+                    "⚠️ Payment confirmation is still processing. Please wait a moment or use /status to check."
+                )
+            return
+        keyboard = [
+            [InlineKeyboardButton("Join as Client", callback_data='client')],
+            [InlineKeyboardButton("Join as Engager", callback_data='engager')],
+            [InlineKeyboardButton("Help", callback_data='help')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "Welcome to VibeLiftBot! 🚀\n"
+            "Boost your social media or earn cash by engaging.\n"
+            "Pick your role:", reply_markup=reply_markup
+        )
+        logger.info(f"Sent /start response to user {user_id}")
+    except Exception as e:
+        logger.error(f"Error in /start for user {user_id}: {str(e)}")
+        await update.message.reply_text("An error occurred. Please try again or contact support.")
 
 # Admin command
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
