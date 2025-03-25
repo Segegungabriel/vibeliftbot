@@ -740,11 +740,14 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     logger.info(f"Admin command used by user {user_id} in chat {chat_id}, expected ADMIN_GROUP_ID: {ADMIN_GROUP_ID}")
     if str(chat_id) != str(ADMIN_GROUP_ID):
+        logger.info(f"Chat ID {chat_id} does not match ADMIN_GROUP_ID {ADMIN_GROUP_ID}")
         await update.message.reply_text("This command can only be used in the admin group.")
         return
     if user_id != ADMIN_USER_ID:
+        logger.info(f"User {user_id} does not match ADMIN_USER_ID {ADMIN_USER_ID}")
         await update.message.reply_text("Admin only!")
         return
+    logger.info(f"Admin panel accessed by user {user_id}")
     keyboard = [
         [InlineKeyboardButton("📊 View Stats", callback_data='admin_stats')],
         [InlineKeyboardButton("🔍 Audit Task", callback_data='admin_audit')],
@@ -762,6 +765,7 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Pick an action:", 
         reply_markup=reply_markup
     )
+    logger.info(f"Admin panel sent to user {user_id}")
 
 # Admin view tasks
 async def admin_view_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1255,12 +1259,71 @@ async def handle_cancel_button(query: CallbackQuery, user_id_str: str) -> None:
 # Main button handler
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    user_id = query.from_user.id
-    user_id_str = str(user_id)
+    user_id = str(query.from_user.id)
     data = query.data
-    await query.answer()
     logger.info(f"Button clicked by user {user_id}: {data}")
+    await query.answer()
 
+    async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    user_id = str(query.from_user.id)
+    data = query.data
+    logger.info(f"Button clicked by user {user_id}: {data}")
+    await query.answer()  # Acknowledge the callback
+    
+    if data == "client":
+        if user_id in users['clients']:
+            client_data = users['clients'][user_id]
+            if client_data['step'] == 'awaiting_order':
+                await query.edit_message_text(
+                    f"You're ready to submit an order for {client_data['platform'].capitalize()}!\n"
+                    "Options:\n"
+                    "1. URL + Bundle: 'https://instagram.com/username starter'\n"
+                    "2. Package + Screenshot: 'package pro' with photo\n"
+                    "3. Custom + Screenshot: 'username, 20 follows, 30 likes, 20 comments' with photo"
+                )
+                logger.info(f"Prompted user {user_id} for order details on {client_data['platform']}")
+                return
+            elif client_data['step'] == 'awaiting_payment':
+                await query.edit_message_text(
+                    f"You have an order pending payment!\n"
+                    f"Use /pay to proceed or /cancel to start over."
+                )
+                return
+        # New client: Show platform selection
+        if not check_rate_limit(user_id, action='client'):
+            await query.edit_message_text("Please wait a moment before trying again!")
+            return
+        users['clients'][user_id] = {'step': 'select_platform'}
+        await save_users()
+        keyboard = [
+            [InlineKeyboardButton("Instagram", callback_data="platform_instagram")],
+            [InlineKeyboardButton("Facebook", callback_data="platform_facebook")],
+            [InlineKeyboardButton("TikTok", callback_data="platform_tiktok")],
+            [InlineKeyboardButton("Twitter", callback_data="platform_twitter")]
+        ]
+        await query.edit_message_text(
+            "Select a platform to boost:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        logger.info(f"Sent platform selection to user {user_id}")
+    
+    elif data.startswith("platform_"):
+        platform = data.split("_")[1]
+        users['clients'][user_id]['step'] = 'awaiting_order'
+        users['clients'][user_id]['platform'] = platform
+        users['clients'][user_id]['order_type'] = 'bundle'  # Default, adjust if needed
+        await save_users()
+        await query.edit_message_text(
+            f"Selected {platform.capitalize()}!\n"
+            "Submit your order:\n"
+            "1. URL + Bundle: 'https://instagram.com/username starter'\n"
+            "2. Package + Screenshot: 'package pro' with photo\n"
+            "3. Custom + Screenshot: 'username, 20 follows, 30 likes, 20 comments' with photo"
+        )
+        logger.info(f"User {user_id} selected platform {platform}, prompted for order")
+    
+    # Add other button handlers (e.g., 'engager', 'help', 'admin_*') as needed
     # Rate limit check for button actions (5s default, 60s for signup actions)
     if not check_rate_limit(user_id_str, action=data, is_signup_action=data in ['client', 'engager', 'start']):
         await query.message.edit_text("Please wait a moment before trying again!")
