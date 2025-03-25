@@ -870,10 +870,11 @@ async def handle_task_button(query: CallbackQuery, user_id: int, user_id_str: st
     users['engagers'][user_id_str]['task_timers'][timer_key] = time.time()
     if task_type == 'f':
         await query.message.edit_text(f"Follow {order['handle']} on {order['platform']}. Send a screenshot here to earn!")
-    elif order.get('use_recent_posts'):
-        await query.message.edit_text(f"Like the 3 latest posts by {order['handle']} on {order['platform']}. Spend 60 seconds on each, then send a screenshot here!")
-    else:
-        await query.message.edit_text(f"Like this post: {order['like_url']}. Spend 60 seconds, then send a screenshot here!")
+    elif task_type == 'l':
+        if order.get('use_recent_posts'):
+            await query.message.edit_text(f"Like the 3 latest posts by {order['handle']} on {order['platform']}. Spend 60 seconds on each, then send a screenshot here!")
+        else:
+            await query.message.edit_text(f"Like this post: {order['like_url']}. Spend 60 seconds, then send a screenshot here!")
     elif task_type == 'c':
         if order.get('use_recent_posts'):
             await query.message.edit_text(f"Comment on the 3 latest posts by {order['handle']} on {order['platform']}. Spend 60 seconds on each, then send a screenshot here!")
