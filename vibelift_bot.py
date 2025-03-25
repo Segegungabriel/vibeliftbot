@@ -1,4 +1,4 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -15,49 +15,47 @@ from flask import Flask, request, jsonify
 import uvicorn
 from asgiref.wsgi import WsgiToAsgi
 from pymongo import MongoClient
-from motor.motor_asyncio import AsyncIOMotorClient  # Add this import
+from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
-
-# Configure logging
+# Set up logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Bot token and admin details
+# Load environment variables
+load_dotenv()
+
+# Access environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-logger.info(f"BOT_TOKEN value: {BOT_TOKEN}")
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN not set.")
-ADMIN_USER_ID = os.getenv("ADMIN_USER_ID")
-ADMIN_GROUP_ID = os.getenv("ADMIN_GROUP_ID")
-PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "https://vibeliftbot.onrender.com/webhook"
-WITHDRAWAL_LIMIT = 5000
-
-# Paystack headers
-PAYSTACK_HEADERS = {
-    "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
-    "Content-Type": "application/json"
-}
-
-# Rate limiting
-RATE_LIMIT = 2
-user_last_command = {}
-
-# MongoDB setup (async)
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 MONGODB_URI = os.getenv("MONGODB_URI")
-if not MONGODB_URI:
-    raise ValueError("MONGODB_URI not set.")
-client = AsyncIOMotorClient(MONGODB_URI)
-db = client['vibelift_db']
-users_collection = db['users']
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", 0))  # Replace with your admin user ID
+ADMIN_GROUP_ID = os.getenv("ADMIN_GROUP_ID", "")  # Replace with your admin group ID
+OPAY_ACCOUNT = os.getenv("OPAY_ACCOUNT", "")  # Replace with your OPAY account number
 
-# Flask app
+# Initialize MongoDB client
+client = AsyncIOMotorClient(MONGODB_URI)
+db = client.get_database("vibeliftbot")  # Replace with your database name
+users_collection = db.get_collection("users")  # Replace with your collection name
+
+# Initialize Flask app
 app = Flask(__name__)
+
+# Health check endpoint for Render
+@app.route('/', methods=['GET'])
+def health_check():
+    logger.info("Health check endpoint accessed")
+    return jsonify({"status": "Bot is running"}), 200
+
+# Webhook endpoint for Telegram updates
+@app.route('/webhook', methods=['POST'])
+async def webhook():
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    logger.info(f"Received and processed update: {update}")
+    await application.process_update(update)
+    return jsonify({"status": "success"}), 200
 
 # Global variables
 application = None
