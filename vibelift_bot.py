@@ -1263,26 +1263,26 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = query.data
     logger.info(f"Button clicked by user {user_id}: {data}")
     await query.answer()
-
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    user_id = str(query.from_user.id)
-    data = query.data
-    logger.info(f"Button clicked by user {user_id}: {data}")
-    await query.answer()  # Acknowledge the callback
     
     if data == "client":
         if user_id in users['clients']:
             client_data = users['clients'][user_id]
             if client_data['step'] == 'awaiting_order':
+                platform = client_data['platform']
+                bundles = "\n".join(
+                    f"- {k.capitalize()}: {v['follows']} follows, {v['likes']} likes, {v['comments']} comments (₦{v['price']})"
+                    for k, v in package_limits['bundle'][platform].items()
+                )
                 await query.edit_message_text(
-                    f"You're ready to submit an order for {client_data['platform'].capitalize()}!\n"
+                    f"You're ready to submit an order for {platform.capitalize()}!\n"
+                    f"Available bundles:\n{bundles}\n"
                     "Options:\n"
                     "1. URL + Bundle: 'https://instagram.com/username starter'\n"
                     "2. Package + Screenshot: 'package pro' with photo\n"
-                    "3. Custom + Screenshot: 'username, 20 follows, 30 likes, 20 comments' with photo"
+                    "3. Custom + Screenshot: 'username, 20 follows, 30 likes, 20 comments' with photo\n"
+                    "Custom limits: 10-500 per metric"
                 )
-                logger.info(f"Prompted user {user_id} for order details on {client_data['platform']}")
+                logger.info(f"Prompted user {user_id} for order details on {platform}")
                 return
             elif client_data['step'] == 'awaiting_payment':
                 await query.edit_message_text(
@@ -1290,7 +1290,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     f"Use /pay to proceed or /cancel to start over."
                 )
                 return
-        # New client: Show platform selection
         if not check_rate_limit(user_id, action='client'):
             await query.edit_message_text("Please wait a moment before trying again!")
             return
@@ -1308,6 +1307,26 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         logger.info(f"Sent platform selection to user {user_id}")
     
+    elif data.startswith("platform_"):
+        platform = data.split("_")[1]
+        users['clients'][user_id]['step'] = 'awaiting_order'
+        users['clients'][user_id]['platform'] = platform
+        users['clients'][user_id]['order_type'] = 'bundle'
+        await save_users()
+        bundles = "\n".join(
+            f"- {k.capitalize()}: {v['follows']} follows, {v['likes']} likes, {v['comments']} comments (₦{v['price']})"
+            for k, v in package_limits['bundle'][platform].items()
+        )
+        await query.edit_message_text(
+            f"Selected {platform.capitalize()}!\n"
+            f"Available bundles:\n{bundles}\n"
+            "Submit your order:\n"
+            "1. URL + Bundle: 'https://instagram.com/username starter'\n"
+            "2. Package + Screenshot: 'package pro' with photo\n"
+            "3. Custom + Screenshot: 'username, 20 follows, 30 likes, 20 comments' with photo\n"
+            "Custom limits: 10-500 per metric"
+        )
+        logger.info(f"User {user_id} selected platform {platform}, prompted for order")
     elif data.startswith("platform_"):
         platform = data.split("_")[1]
         users['clients'][user_id]['step'] = 'awaiting_order'
@@ -1573,16 +1592,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Received message from user {user_id}: '{update.message.text}' (normalized: '{text}')")
     
     is_signup_action = (
-        (user_id in users['clients'] and users['clients'][user_id]['step'] in ['select_platform', 'awaiting_order', 'awaiting_urls', 'awaiting_payment']) or
+        (user_id in users['clients'] and users['clients'][user_id]['step'] in ['select_platform', 'awaiting_urls']) or
         (user_id in users['engagers'] and 'awaiting_payout' in users['engagers'][user_id])
     )
     if not check_rate_limit(update.message.from_user.id, action='message', is_signup_action=is_signup_action):
         logger.info(f"User {user_id} is rate-limited")
         await update.message.reply_text("Hang on a sec and try again!")
         return
-    if str(update.message.chat_id) == ADMIN_GROUP_ID and user_id != ADMIN_USER_ID:
-        logger.info(f"User {user_id} is not admin, ignoring message in admin group")
-        return
+
 
     # Handle pending admin actions (e.g., audit, clear tasks, verification codes)
     pending_action = None
@@ -1834,32 +1851,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in users['clients']:
         client_data = users['clients'][user_id]
         logger.info(f"User {user_id} is a client, current step: {client_data['step']}")
-        if client_data['step'] == 'awaiting_order':
-            logger.info(f"Processing order submission for user {user_id}")
-            platform = client_data['platform']
-            order_type = client_data['order_type']
-            package = None
-            profile_url = None
-            profile_image_id = None
-            follows = 0
-            likes = 0
-            comments = 0
-            amount = 0
+    if client_data['step'] == 'awaiting_order':
+        logger.info(f"Processing order submission for user {user_id}")
+        platform = client_data['platform']
+        order_type = client_data['order_type']
+        package = None
+        profile_url = None
+        profile_image_id = None
+        follows = 0
+        likes = 0
+        comments = 0
+        amount = 0
 
-            # Use caption if photo is provided, otherwise use text
-            text = (update.message.caption or update.message.text or "").strip()
-            if not text:
-                logger.info(f"User {user_id} did not provide text or caption")
-                await update.message.reply_text(
-                    "Please provide your order details! See format with /client or after selecting a platform."
-                )
-                return
+        text = (update.message.caption or update.message.text or "").strip()
+        if not text:
+            logger.info(f"User {user_id} did not provide text or caption")
+            await update.message.reply_text(
+                "Please provide your order details! See format with /client or after selecting a platform."
+            )
+            return
 
-            # Override rate limit to 5s for order submission retries
-            if not check_rate_limit(user_id, action='message', cooldown=5):
-                logger.info(f"User {user_id} is rate-limited")
-                await update.message.reply_text("Please wait 5 seconds before trying again!")
-                return
+        # Override rate limit to 5s for order submission retries
+        if not check_rate_limit(user_id, action='message', cooldown=5, is_signup_action=False):
+            logger.info(f"User {user_id} is rate-limited")
+            await update.message.reply_text("Please wait 5 seconds before trying again!")
+            return
 
             parts = [p.strip() for p in text.split(',')]
             if parts[0].startswith('http'):
