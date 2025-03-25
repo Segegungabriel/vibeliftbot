@@ -455,10 +455,6 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Something went wrong. Try again later.")
 
 # Flask routes
-@app.route('/paystack-webhook', methods=['POST'])
-async def paystack_webhook():
-    logger.info("Received Paystack webhook request")
-    if request.method == 'POST':
         paystack_secret = os.getenv("PAYSTACK_SECRET_KEY")
         signature = request.headers.get('X-Paystack-Signature')
         body = request.get_data()
@@ -1572,7 +1568,7 @@ def main():
 
     # Start Flask app
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8443)))
-    
+
 # Call main() to initialize application
 main()
 
