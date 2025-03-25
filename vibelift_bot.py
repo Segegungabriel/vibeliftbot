@@ -311,23 +311,26 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await message.reply_text("Available Tasks:", reply_markup=reply_markup)
 
 # Pay command
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    # Since we can't use async here, we'll process updates synchronously
+    import asyncio
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(application.update_queue.put(update))
+    return "OK", 200
+
 @app.route('/payment-success', methods=['GET'])
-async def payment_success():
+def payment_success():
     order_id = request.args.get('order_id')
     if not order_id:
         logger.error("No order ID provided in payment-success redirect")
         return "Error: No order ID provided", 400
     logger.info(f"Payment success redirect received for order_id: {order_id}")
-    return await send_file("static/success.html") 
-
-@app.route('/webhook', methods=['POST'])
-async def webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    await application.update_queue.put(update)  # Queue the update for processing
-    return "OK", 200
+    return send_file("vibeliftbot/static/success.html")  # Adjust path if needed
 
 @app.route('/payment_callback', methods=['POST'])
-async def payment_callback():
+def payment_callback():
     global users
     try:
         data = request.get_json()
@@ -354,21 +357,26 @@ async def payment_callback():
             users["clients"][user_id]["step"] = "completed"
             save_users()
 
-            await application.bot.send_message(
+            # Send messages synchronously
+            import asyncio
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(application.bot.send_message(
                 chat_id=user_id,
                 text=f"🎉 Payment successful! Your order (ID: {order_id}) is now active. Check progress with /status."
-            )
-            await application.bot.send_message(
+            ))
+            loop.run_until_complete(application.bot.send_message(
                 chat_id=ADMIN_GROUP_ID,
                 text=f"Payment success for order {order_id} from {user_id}."
-            )
+            ))
             logger.info(f"Order {order_id} moved to active_orders for user {user_id}")
         else:
             logger.warning(f"Payment failed for order_id: {order_id}, status: {status}")
-            await application.bot.send_message(
+            import asyncio
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(application.bot.send_message(
                 chat_id=user_id,
                 text="⚠️ Payment failed. Please try again with /pay or contact support."
-            )
+            ))
 
         return "OK", 200
     except Exception as e:
@@ -1539,12 +1547,12 @@ def start_update_processing():
 # Define application as a global variable
 application = None
 
-def main():
+ddef main():
     global application
     logger.info("Starting bot...")
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Add handlers (unchanged)
+    # Add handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("client", client))
     application.add_handler(CommandHandler("engager", engager))
@@ -1559,9 +1567,11 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.PHOTO, handle_message))
 
-    # Set Telegram webhook
+    # Set Telegram webhook (make it synchronous for Flask compatibility)
     webhook_url = "https://vibeliftbot.onrender.com/webhook"
-    application.bot.set_webhook(webhook_url)
+    import asyncio
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(application.bot.set_webhook(webhook_url))
     logger.info(f"Webhook set to {webhook_url}")
 
     # Start background update processing

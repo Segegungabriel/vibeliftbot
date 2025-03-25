@@ -1,4 +1,4 @@
-flask==3.0.3
+Flask[async]>=2.0.0
 python-telegram-bot[webhooks]==20.8
 requests==2.32.3
 pymongo==4.8.0
