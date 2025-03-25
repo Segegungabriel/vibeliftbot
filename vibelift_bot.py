@@ -16,6 +16,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters,
     ContextTypes,
+    Dispatcher,
 )
 
 # Configure logging
@@ -317,20 +318,25 @@ async def payment_success():
     if not order_id:
         logger.error("No order ID provided in payment-success redirect")
         return "Error: No order ID provided", 400
-
     logger.info(f"Payment success redirect received for order_id: {order_id}")
-    
-    # Serve the success.html file
-    return await send_file("static/success.html")
+    return await send_file("static/success.html") 
 
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    update = request.get_json()
+    logger.info(f"Received update: {update}")
+    if update and application is not None:
+        application.process_update(Update.de_json(update, application.bot))
+    else:
+        logger.error("Application is None or update is invalid")
+    return "OK", 200
+    
 @app.route('/payment_callback', methods=['POST'])
 async def payment_callback():
     global users
     try:
         data = request.get_json()
         logger.info(f"Payment callback received: {data}")
-
-        # Paystack-specific fields (adjust if using a different gateway)
         event = data.get("event")
         payment_data = data.get("data", {})
         order_id = payment_data.get("metadata", {}).get("order_id")
@@ -340,42 +346,33 @@ async def payment_callback():
             logger.error("Invalid callback data: missing order_id or status")
             return "Invalid data", 400
 
-        # Find the user associated with this order
-        user_id = None
-        for uid, payment in users.get("pending_payments", {}).items():
-            if payment.get("order_id") == order_id:
-                user_id = uid
-                break
-
-        if not user_id:
+        payment_id = order_id
+        if payment_id not in users.get("pending_payments", {}):
             logger.error(f"No pending payment found for order_id: {order_id}")
             return "Order not found", 404
 
+        user_id = users["pending_payments"][payment_id]["user_id"]
         if event == "charge.success" and status == "success":
-            # Move order from pending_payments to active_orders
-            order = users["pending_payments"].pop(user_id)
+            order = users["pending_payments"].pop(payment_id)
             order_details = order["order_details"]
-            order_details["priority"] = False  # Match your original logic
             users.setdefault("active_orders", {})[order_id] = order_details
             users["clients"][user_id]["step"] = "completed"
             save_users()
 
-            # Notify the user
             await application.bot.send_message(
                 chat_id=user_id,
                 text=f"🎉 Payment successful! Your order (ID: {order_id}) is now active. Check progress with /status."
             )
-            # Notify admins
             await application.bot.send_message(
                 chat_id=ADMIN_GROUP_ID,
-                text=f"Payment success for order {order_id} from user {user_id}."
+                text=f"Payment success for order {order_id} from {user_id}."
             )
             logger.info(f"Order {order_id} moved to active_orders for user {user_id}")
         else:
             logger.warning(f"Payment failed for order_id: {order_id}, status: {status}")
             await application.bot.send_message(
                 chat_id=user_id,
-                text="⚠️ Payment failed. Please try again or contact support."
+                text="⚠️ Payment failed. Please try again with /pay or contact support."
             )
 
         return "OK", 200
@@ -432,12 +429,12 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     email = f"{user_id}@vibeliftbot.com"
     amount = users['clients'][user_id_str]['amount'] * 100  # Convert to kobo
-    callback_url = f"{WEBHOOK_URL.rsplit('/', 1)[0]}/payment-success?order_id={users['clients'][user_id_str]['order_id']}"
+    callback_url = f"https://vibeliftbot.onrender.com/payment-success?order_id={users['clients'][user_id_str]['order_id']}"  # Hardcode for clarity
     payload = {
         "email": email,
         "amount": amount,
         "callback_url": callback_url,
-        "metadata": {"user_id": user_id, "order_id": users['clients'][user_id_str]['order_id']}
+        "metadata": {"order_id": users['clients'][user_id_str]['order_id']}  # Simplified metadata
     }
     try:
         response = requests.post("https://api.paystack.co/transaction/initialize", json=payload, headers=PAYSTACK_HEADERS)
@@ -1542,7 +1539,7 @@ def main():
     logger.info("Starting bot...")
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Add handlers
+    # Add handlers (unchanged)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("client", client))
     application.add_handler(CommandHandler("engager", engager))
@@ -1556,6 +1553,11 @@ def main():
     application.add_handler(CallbackQueryHandler(button))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.PHOTO, handle_message))
+
+    # Set Telegram webhook
+    webhook_url = "https://vibeliftbot.onrender.com/webhook"
+    application.bot.set_webhook(webhook_url)
+    logger.info(f"Webhook set to {webhook_url}")
 
     # Use the port from Render's environment variable, default to 8443 if not set
     port = int(os.getenv("PORT", 8443))
@@ -1580,17 +1582,6 @@ app = Flask(__name__)
 @app.route('/')
 def health_check():
     return "Service is running", 200
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    update = request.get_json()
-    logger.info(f"Received update: {update}")
-    if update and application is not None:
-        application.process_update(Update.de_json(update, application.bot))
-    else:
-        logger.error("Application is None or update is invalid")
-    return "OK", 200
-
 
 # Call main() directly so it runs when the module is imported by Gunicorn
 main()
