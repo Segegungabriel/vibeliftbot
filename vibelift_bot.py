@@ -314,10 +314,8 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 @app.route('/webhook', methods=['POST'])
 def webhook():
     update = Update.de_json(request.get_json(force=True), application.bot)
-    # Since we can't use async here, we'll process updates synchronously
     import asyncio
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(application.update_queue.put(update))
+    asyncio.run(application.update_queue.put(update))
     return "OK", 200
 
 @app.route('/payment-success', methods=['GET'])
@@ -327,7 +325,7 @@ def payment_success():
         logger.error("No order ID provided in payment-success redirect")
         return "Error: No order ID provided", 400
     logger.info(f"Payment success redirect received for order_id: {order_id}")
-    return send_file("vibeliftbot/static/success.html")  # Adjust path if needed
+    return send_file("static/success.html")  # Adjusted path since vibelift_bot.py is in src/
 
 @app.route('/payment_callback', methods=['POST'])
 def payment_callback():
@@ -357,14 +355,12 @@ def payment_callback():
             users["clients"][user_id]["step"] = "completed"
             save_users()
 
-            # Send messages synchronously
             import asyncio
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(application.bot.send_message(
+            asyncio.run(application.bot.send_message(
                 chat_id=user_id,
                 text=f"🎉 Payment successful! Your order (ID: {order_id}) is now active. Check progress with /status."
             ))
-            loop.run_until_complete(application.bot.send_message(
+            asyncio.run(application.bot.send_message(
                 chat_id=ADMIN_GROUP_ID,
                 text=f"Payment success for order {order_id} from {user_id}."
             ))
@@ -372,8 +368,7 @@ def payment_callback():
         else:
             logger.warning(f"Payment failed for order_id: {order_id}, status: {status}")
             import asyncio
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(application.bot.send_message(
+            asyncio.run(application.bot.send_message(
                 chat_id=user_id,
                 text="⚠️ Payment failed. Please try again with /pay or contact support."
             ))
@@ -1547,7 +1542,7 @@ def start_update_processing():
 # Define application as a global variable
 application = None
 
-ddef main():
+def main():
     global application
     logger.info("Starting bot...")
     application = Application.builder().token(BOT_TOKEN).build()
