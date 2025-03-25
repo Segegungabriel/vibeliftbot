@@ -1620,18 +1620,19 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Message handler
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
-    text = update.message.text.lower() if update.message.text else ""
-    logger.info(f"Received message from user {user_id}: '{update.message.text}' (normalized: '{text}')")
+    text = (update.message.caption or update.message.text or "").lower().strip()  # Handle caption or text
+    logger.info(f"Received message from user {user_id}: '{update.message.text or update.message.caption}' (normalized: '{text}')")
     
+    # Define signup actions (60s cooldown), exclude awaiting_order
     is_signup_action = (
         (user_id in users['clients'] and users['clients'][user_id]['step'] in ['select_platform', 'awaiting_urls']) or
         (user_id in users['engagers'] and 'awaiting_payout' in users['engagers'][user_id])
     )
-    if not check_rate_limit(update.message.from_user.id, action='message', is_signup_action=is_signup_action):
+    # General message rate limit (5s default)
+    if not check_rate_limit(user_id, action='message', is_signup_action=is_signup_action):
         logger.info(f"User {user_id} is rate-limited")
         await update.message.reply_text("Hang on a sec and try again!")
         return
-
 
     # Handle pending admin actions (e.g., audit, clear tasks, verification codes)
     pending_action = None
@@ -1815,7 +1816,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await application.bot.send_message(chat_id=user_id, text="Wrong code! Try again.")
         return
 
-        pricing = {
+    pricing = {
         'followers': {
             'instagram': 120,  # Price per 10 followers
             'facebook': 150,
@@ -1840,31 +1841,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in users['clients']:
         client_data = users['clients'][user_id]
         logger.info(f"User {user_id} is a client, current step: {client_data['step']}")
-    if client_data['step'] == 'awaiting_order':
-        logger.info(f"Processing order submission for user {user_id}")
-        platform = client_data['platform']
-        order_type = client_data['order_type']
-        package = None
-        profile_url = None
-        profile_image_id = None
-        follows = 0
-        likes = 0
-        comments = 0
-        amount = 0
+        if client_data['step'] == 'awaiting_order':
+            logger.info(f"Processing order submission for user {user_id}")
+            platform = client_data['platform']
+            order_type = client_data['order_type']
+            package = None
+            profile_url = None
+            profile_image_id = None
+            follows = 0
+            likes = 0
+            comments = 0
+            amount = 0
 
-        text = (update.message.caption or update.message.text or "").strip()
-        if not text:
-            logger.info(f"User {user_id} did not provide text or caption")
-            await update.message.reply_text(
-                "Please provide your order details! See format with /client or after selecting a platform."
-            )
-            return
+            if not text:
+                logger.info(f"User {user_id} did not provide text or caption")
+                await update.message.reply_text(
+                    "Please provide your order details! See format with /client or after selecting a platform."
+                )
+                return
 
-        # Override rate limit to 5s for order submission retries
-        if not check_rate_limit(user_id, action='message', cooldown=5, is_signup_action=False):
-            logger.info(f"User {user_id} is rate-limited")
-            await update.message.reply_text("Please wait 5 seconds before trying again!")
-            return
+            # Specific 5s cooldown for order submissions
+            if not check_rate_limit(user_id, action='order_submission', cooldown=5, is_signup_action=False):
+                logger.info(f"User {user_id} is rate-limited for order submission")
+                await update.message.reply_text("Please wait 5 seconds before trying again!")
+                return
 
             parts = [p.strip() for p in text.split(',')]
             if parts[0].startswith('http'):
@@ -2064,7 +2064,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"Task completed for user {user_id}: Order {order_id}, Type {task_type}, Earned ₦{amount}")
             return
 
-    # Admin group message handling for set priorit
+    # Admin group message handling for set priority
     if str(update.message.chat_id) == ADMIN_GROUP_ID and user_id == ADMIN_USER_ID:
         if pending_action and action_id_to_remove.startswith('set_priority_'):
             logger.info(f"Processing set_priority action for user {user_id}")
