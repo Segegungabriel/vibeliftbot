@@ -478,7 +478,7 @@ async def initiate_payment(user_id: str, amount: int, order_id: str) -> str:
         logger.error(f"Error initiating payment for user {user_id}, order {order_id}: {str(e)}")
         raise
 
-aasync def pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.message.from_user.id)
     if not check_rate_limit(user_id, action='pay'):  # Added action parameter
         await update.message.reply_text("Please wait a moment before trying again!")
