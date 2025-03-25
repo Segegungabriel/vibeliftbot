@@ -19,6 +19,48 @@ from pymongo import MongoClient
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 
+package_limits = {
+    'followers': {
+        'instagram': {'min': 10, 'max': 500},
+        'facebook': {'min': 10, 'max': 500},
+        'tiktok': {'min': 10, 'max': 500},
+        'twitter': {'min': 10, 'max': 500}
+    },
+    'likes': {
+        'instagram': {'min': 10, 'max': 500},
+        'facebook': {'min': 10, 'max': 500},
+        'tiktok': {'min': 10, 'max': 500},
+        'twitter': {'min': 10, 'max': 500}
+    },
+    'comments': {
+        'instagram': {'min': 10, 'max': 500},
+        'facebook': {'min': 10, 'max': 500},
+        'tiktok': {'min': 10, 'max': 500},
+        'twitter': {'min': 10, 'max': 500}
+    },
+    'bundle': {
+        'instagram': {
+            'starter': {'follows': 10, 'likes': 20, 'comments': 5, 'price': 1890},
+            'pro': {'follows': 50, 'likes': 100, 'comments': 10, 'price': 8640},
+            'elite': {'follows': 100, 'likes': 200, 'comments': 50, 'price': 18900}
+        },
+        'facebook': {
+            'starter': {'follows': 10, 'likes': 20, 'comments': 5, 'price': 3240},
+            'pro': {'follows': 50, 'likes': 100, 'comments': 10, 'price': 15390},
+            'elite': {'follows': 100, 'likes': 200, 'comments': 50, 'price': 32400}
+        },
+        'tiktok': {
+            'starter': {'follows': 10, 'likes': 20, 'comments': 5, 'price': 3780},
+            'pro': {'follows': 50, 'likes': 100, 'comments': 10, 'price': 17280},
+            'elite': {'follows': 100, 'likes': 200, 'comments': 50, 'price': 37800}
+        },
+        'twitter': {
+            'starter': {'follows': 10, 'likes': 20, 'comments': 5, 'price': 2880},
+            'pro': {'follows': 50, 'likes': 100, 'comments': 10, 'price': 12780},
+            'elite': {'follows': 100, 'likes': 200, 'comments': 50, 'price': 28800}
+        }
+    }
+}
 # Set up logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -478,38 +520,6 @@ async def initiate_payment(user_id: str, amount: int, order_id: str) -> str:
         logger.error(f"Error initiating payment for user {user_id}, order {order_id}: {str(e)}")
         raise
 
-async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.message.from_user.id)
-    if not check_rate_limit(user_id, action='pay'):  # Added action parameter
-        await update.message.reply_text("Please wait a moment before trying again!")
-        return
-    if user_id not in users['clients'] or users['clients'][user_id].get('step') != 'awaiting_payment':
-        await update.message.reply_text("You don’t have an order awaiting payment! Start with /client.")
-        return
-
-    client_data = users['clients'][user_id]
-    if client_data['step'] != 'awaiting_payment':
-        logger.info(f"User {user_id} is not in awaiting_payment step, current step: {client_data['step']}")
-        await update.message.reply_text("You don’t have an order awaiting payment. Start a new order with /client!")
-        return
-
-    try:
-        amount = client_data['amount']
-        order_id = client_data['order_id']
-        platform = client_data['platform']
-        logger.info(f"Processing payment for user {user_id}: Order {order_id}, Amount ₦{amount}, Platform {platform}")
-        
-        payment_message = (
-            f"Please send ₦{amount} to this OPay account:\n"
-            f"Account Number: {OPAY_ACCOUNT}\n\n"
-            f"After payment, reply with a screenshot of your payment confirmation."
-        )
-        await update.message.reply_text(payment_message)
-        logger.info(f"Sent payment instructions to user {user_id}")
-    except Exception as e:
-        logger.error(f"Error in /pay for user {user_id}: {str(e)}")
-        await update.message.reply_text("An error occurred while processing your payment. Please try again or contact support.")
-
 @app.route('/payment-success', methods=['GET'])
 async def payment_success():
     order_id = request.args.get('order_id')
@@ -735,7 +745,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("An error occurred. Please try again or contact support.")
 
 # Admin command
-async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     chat_id = update.effective_chat.id
     logger.info(f"Admin command used by user {user_id} in chat {chat_id}, expected ADMIN_GROUP_ID: {ADMIN_GROUP_ID}")
@@ -1308,6 +1318,9 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.info(f"Sent platform selection to user {user_id}")
 
     elif data == "engager":
+        if not check_rate_limit(user_id, action='engager'):
+            await query.edit_message_text("Please wait a moment before trying again!")
+            return
         if user_id not in users['engagers']:
             users['engagers'][user_id] = {
                 'earnings': 0,
@@ -1329,6 +1342,9 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
 
     elif data == "help":
+        if not check_rate_limit(user_id, action='help'):
+            await query.edit_message_text("Please wait a moment before trying again!")
+            return
         await query.edit_message_text(
             "Need help?\n"
             "- Clients: Boost your social media with /client.\n"
