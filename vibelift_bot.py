@@ -92,16 +92,6 @@ def check_rate_limit(user_id: str, action: str, cooldown: int = 5) -> bool:
     user_last_command[key] = current_time
     return True
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error(f"Update {update} caused error {context.error}")
-    if update and update.effective_chat:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="An error occurred while processing your request. Please try again or contact support."
-        )
-
-# In the main function:
-application.add_error_handler(error_handler)
 
 # Command handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
