@@ -459,10 +459,11 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await handle_cancel_button(query, user_id, data)
         elif data.startswith('admin_') or data.startswith('approve_payout_') or data.startswith('reject_payout_') or data.startswith('priority_') or data.startswith('cancel_order_'):
             await handle_admin_button(query, int(user_id), user_id, data)
-    except Exception as e:
+     except Exception as e:
         logger.error(f"Error handling button {data} for user {user_id}: {e}", exc_info=True)
-        await query.message.edit_text("Oops, something broke! Try again or hit /help! 😅", parse_mode='Markdown')
-        except Exception as e2:
+        try:
+            await query.message.edit_text("Oops, something broke! Try again or hit /help! 😅", parse_mode='Markdown')
+        except Exception as e2:  # Properly nested under a new try block
             logger.warning(f"Failed to send error message to {user_id}: {e2}")
 
 async def handle_help_button(query: CallbackQuery, data: str) -> None:
