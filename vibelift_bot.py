@@ -307,10 +307,11 @@ async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await save_users()
     if update.callback_query:
         query = update.callback_query
-            await query.message.edit_text(message_text, reply_markup=reply_markup)
-        else:
+        await query.answer()
+         await query.message.edit_text(message_text, reply_markup=reply_markup)
+    else:
             await update.message.reply_text(message_text, reply_markup=reply_markup)
-        return
+    return
     users['engagers'][user_id] = {
         'earnings': 0,
         'signup_bonus': 500,
@@ -1302,7 +1303,7 @@ async def root():
 
 @app.route('/paystack-webhook', methods=['POST'])
 async def paystack_webhook():
-    payload = await request.get_json()
+    payload = request.get_json()
     logger.info(f"Paystack webhook received with payload: {json.dumps(payload)}")
     
     if payload.get('event') != 'charge.success':
