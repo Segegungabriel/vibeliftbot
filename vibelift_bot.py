@@ -1351,6 +1351,22 @@ async def serve_success():
     logger.info(f"Serving success page for order {order_id}")
     return Response(html_content, mimetype='text/html')
 
+@app.route('/webhook', methods=['POST'])
+async def telegram_webhook():
+    """Handle incoming Telegram updates via webhook."""
+    update = await request.get_json()
+    if not update:
+        logger.warning("Received empty webhook payload")
+        return jsonify({"status": "no update"}), 400
+    
+    logger.info(f"Received webhook update: {json.dumps(update, indent=2)}")
+    try:
+        await application.update_queue.put(Update.de_json(update, application.bot))
+        return jsonify({"status": "success"}), 200
+    except Exception as e:
+        logger.error(f"Failed to process webhook update: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 # Daily Tips Scheduler
 async def send_daily_tips():
     while True:
@@ -1428,6 +1444,9 @@ async def main():
     except Exception as e:
         logger.error(f"Failed to set webhook: {e}")
         raise
+
+    await application.start()
+    logger.info("Application started—ready for action!")
 
     asyncio.create_task(send_daily_tips())
     logger.info("Daily tips scheduler fired up! ✨")
