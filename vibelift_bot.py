@@ -424,25 +424,17 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     logger.info(f"Leaderboard sent to user {user_id}")
 
 # Paystack API integration
-async def initialize_paystack_transaction(order_id: str, amount: int, email: str) -> Dict[str, Any]:
+async def initialize_paystack_transaction(payment_data: dict) -> dict:
     url = "https://api.paystack.co/transaction/initialize"
     headers = {
         "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
         "Content-Type": "application/json"
     }
-    payload = {
-        "amount": amount * 100,  # Convert to kobo
-        "email": email,
-        "reference": order_id,
-        "callback_url": "https://vibeliftbot.onrender.com/static/success.html"  # User redirect only
-    }
     async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, json=payload) as response:
-            logger.info(f"Paystack init response: {response.status} - {await response.text()}")
-            if response.status != 200:
-                logger.error(f"Paystack API error: {await response.text()}")
-                return {"error": "Failed to initialize transaction"}
-            return await response.json()
+        async with session.post(url, headers=headers, json=payment_data) as resp:
+            response_data = await resp.json()
+            logger.info(f"Paystack init response: {resp.status} - {json.dumps(response_data)}")
+            return response_data if resp.status == 200 else {"error": "Initialization failed", "details": response_data}
 
 # Pay command
 async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
