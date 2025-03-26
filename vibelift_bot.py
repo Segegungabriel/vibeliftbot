@@ -1040,7 +1040,6 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
             else:
                 await query.message.edit_text(f"Order *{order_id}* vanished! 👻 Already sorted?")
                 logger.info(f"Order {order_id} not found for rejection")
-            except Exception as e:
                 logger.warning(f"Failed to notify client {client_id}: {e} ⚠️")
             await update_admin_dashboard(query)
         else:
