@@ -198,13 +198,13 @@ async def client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text(reply)
         return
     if user_id in users['engagers']:
-    message_text = (
+        message_text = (
         "You’re an engager stacking cash! 💼\n"
         "You can also place orders as a client—double the fun! 😎\n"
         "Starting as client now..."
         )
     else:
-    message_text = "Which platform are we juicing up today? 🎯"
+        message_text = "Which platform are we juicing up today? 🎯"
         return
     if user_id in users['clients']:
         client_data = users['clients'][user_id]
