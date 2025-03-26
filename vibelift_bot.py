@@ -1164,7 +1164,7 @@ async def main():
     config = uvicorn.Config(
         asgi_app,
         host="0.0.0.0",
-        port=int(os.getenv("PORT", 8000)),
+        port=int(os.getenv("PORT", 10000)),
         log_level="info"
     )
     server = uvicorn.Server(config)
