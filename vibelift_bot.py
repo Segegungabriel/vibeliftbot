@@ -892,7 +892,9 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
         await query.message.edit_text("Which task’s outta here? 🚫", reply_markup=reply_markup)
         logger.info("Sent task rejection options")
     elif action == 'approve_payout':
-        pending_payouts = {k: v for k, v in users['engagers'].items() if v.get('awaiting_payout')}async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: str, data: str) -> None:
+        pending_payouts = {k: v for k, v in users['engagers'].items() if v.get('awaiting_payout')}
+
+async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: str, data: str) -> None:
     if user_id_str != str(ADMIN_USER_ID):
         await query.message.edit_text("Admin zone, fam! 🛡️ No entry unless you’re the boss!")
         return
@@ -1583,7 +1585,7 @@ async def serve_success():
     """
     logger.info(f"Serving success page for order {order_id}")
     return Response(html_content, mimetype='text/html')
-    
+
 # Daily tips scheduler
 async def send_daily_tips():
     while True:
