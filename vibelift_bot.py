@@ -237,6 +237,25 @@ async def client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 "4. *Custom + Pic* ➡️ `username, 20 follows, 30 likes, 20 comments` + 📸\n"
                 "Custom limits: 10-500. Pics optional for 1 & 2."
             )
+        else:  # Handle 'completed' or other steps
+            message_text = (
+                "Your last order’s done or in progress! 🌟\n"
+                "Check /status for the latest or start a new one below!"
+            )
+            keyboard = [
+                [InlineKeyboardButton("Instagram", callback_data="platform_instagram")],
+                [InlineKeyboardButton("Facebook", callback_data="platform_facebook")],
+                [InlineKeyboardButton("TikTok", callback_data="platform_tiktok")],
+                [InlineKeyboardButton("Twitter", callback_data="platform_twitter")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            if update.callback_query:
+                query = update.callback_query
+                await query.answer()
+                await query.message.edit_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+            else:
+                await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+            return
         if update.callback_query:
             query = update.callback_query
             await query.answer()
@@ -257,9 +276,9 @@ async def client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.callback_query:
         query = update.callback_query
         await query.answer()
-        await query.message.edit_text(message_text, reply_markup=reply_markup)
+        await query.message.edit_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
     else:
-        await update.message.reply_text(message_text, reply_markup=reply_markup)
+        await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
 
 async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
@@ -400,46 +419,56 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data = query.data
     logger.info(f"Button clicked by user {user_id}: {data}")
 
-    if data == 'client':
-        await client(update, context)
-    elif data == 'engager':
-        await engager(update, context)
-    elif data == 'help':
-        await help_command(update, context)
-    elif data == 'tasks':
-        await tasks(update, context)
-    elif data == 'balance':
-        await balance(update, context)
-    elif data == 'withdraw':
-        await withdraw(update, context)
-    elif data.startswith('platform_'):
-        platform = data.split('_')[1]
-        users['clients'][user_id] = {'step': 'awaiting_order', 'platform': platform}
-        await save_users()
-        bundles = "\n".join(
-            f"- *{k.capitalize()}*: {v['follows']} follows, {v['likes']} likes, {v['comments']} comments (₦{v['price']})"
-            for k, v in package_limits['bundle'][platform].items()
-        )
-        await query.message.edit_text(
-            f"Locked in *{platform.capitalize()}*! 🚀\n"
-            "[*Order* ➡️ Payment ➡️ Approval ➡️ Active]\n"
-            f"Pick your vibe:\n{bundles}\n"
-            "*How to order:*\n"
-            "1. *Handle + Bundle* ➡️ `@myhandle starter`\n"
-            "2. *URL + Bundle* ➡️ `https://instagram.com/username pro`\n"
-            "3. *Package + Pic* ➡️ `package starter` + 📸\n"
-            "4. *Custom + Pic* ➡️ `username, 20 follows, 30 likes, 20 comments` + 📸\n"
-            "Custom limits: 10-500. Pics optional for 1 & 2.",
-            parse_mode='Markdown'
-        )
-    elif data.startswith('task_'):
-        await handle_task_button(query, int(user_id), user_id, data)
-    elif data.startswith('help_'):
-        await handle_help_button(query, data)
-    elif data.startswith('cancel_'):
-        await handle_cancel_button(query, user_id, data)
-    elif data.startswith('admin_') or data.startswith('approve_payout_') or data.startswith('reject_payout_') or data.startswith('priority_') or data.startswith('cancel_order_'):
-        await handle_admin_button(query, int(user_id), user_id, data)
+    try:
+        if data == 'client':
+            await client(update, context)
+        elif data == 'engager':
+            await engager(update, context)
+        elif data == 'help':
+            await help_command(update, context)
+        elif data == 'tasks':
+            await tasks(update, context)
+        elif data == 'balance':
+            await balance(update, context)
+        elif data == 'withdraw':
+            await withdraw(update, context)
+        elif data.startswith('platform_'):
+            platform = data.split('_')[1]
+            if platform not in package_limits['bundle']:
+                await query.message.edit_text("Oops, that platform’s not on the menu! Try /client again! 😅", parse_mode='Markdown')
+                return
+            users['clients'][user_id] = {'step': 'awaiting_order', 'platform': platform}
+            await save_users()
+            bundles = "\n".join(
+                f"- *{k.capitalize()}*: {v['follows']} follows, {v['likes']} likes, {v['comments']} comments (₦{v['price']})"
+                for k, v in package_limits['bundle'][platform].items()
+            )
+            await query.message.edit_text(
+                f"Locked in *{platform.capitalize()}*! 🚀\n"
+                "[*Order* ➡️ Payment ➡️ Approval ➡️ Active]\n"
+                f"Pick your vibe:\n{bundles}\n"
+                "*How to order:*\n"
+                "1. *Handle + Bundle* ➡️ `@myhandle starter`\n"
+                "2. *URL + Bundle* ➡️ `https://instagram.com/username pro`\n"
+                "3. *Package + Pic* ➡️ `package starter` + 📸\n"
+                "4. *Custom + Pic* ➡️ `username, 20 follows, 30 likes, 20 comments` + 📸\n"
+                "Custom limits: 10-500. Pics optional for 1 & 2.",
+                parse_mode='Markdown'
+            )
+        elif data.startswith('task_'):
+            await handle_task_button(query, int(user_id), user_id, data)
+        elif data.startswith('help_'):
+            await handle_help_button(query, data)
+        elif data.startswith('cancel_'):
+            await handle_cancel_button(query, user_id, data)
+        elif data.startswith('admin_') or data.startswith('approve_payout_') or data.startswith('reject_payout_') or data.startswith('priority_') or data.startswith('cancel_order_'):
+            await handle_admin_button(query, int(user_id), user_id, data)
+    except Exception as e:
+        logger.error(f"Error handling button {data} for user {user_id}: {e}", exc_info=True)
+        try:
+            await query.message.edit_text("Oops, something broke! Try again or hit /help! 😅", parse_mode='Markdown')
+        except Exception as e2:
+            logger.warning(f"Failed to send error message to {user_id}: {e2}")
 
 async def handle_help_button(query: CallbackQuery, data: str) -> None:
     action = data.split('_')[1]
