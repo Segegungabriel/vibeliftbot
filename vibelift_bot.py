@@ -19,10 +19,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from wsgiref.simple_server import WSGIRequestHandler
-from werkzeug.middleware.dispatcher import DispatcherMiddleware
-from werkzeug.wrappers import Response
-from asgiref.wsgi import WsgiToAsgi
+from asgiref.wsgi import WsgiToAsgi  # Updated import
 import uvicorn
 import pymongo
 from pymongo import MongoClient
@@ -99,7 +96,7 @@ package_limits = {
         },
         'tiktok': {
             'starter': {'follows': 10, 'likes': 20, 'comments': 5, 'price': 2700},
-            'pro': {'follows': 50, 'likes': 100, 'comments': 10, 'price': 12600},
+            'pro': {'follows': 50, 'likes': 100, 'comments': 10, 'price': 14500},  # Updated from 12600 to 14500
             'elite': {'follows': 100, 'likes': 200, 'comments': 50, 'price': 27000}
         },
         'twitter': {
@@ -122,8 +119,6 @@ def check_rate_limit(user_id: str, action: str, cooldown: int = DEFAULT_COOLDOWN
             return False
     RATE_LIMITS[key] = current_time
     return True
-
-asgi_app = WsgiToAsgi(app)
 
 # MongoDB functions
 async def load_users() -> Dict[str, Any]:
@@ -149,7 +144,8 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.error(f"Update {update} caused error {context.error}")
     if update and update.message:
         await update.message.reply_text("An error occurred. Please try again or contact support.")
-\# Generate admin cod
+
+# Generate admin code
 async def generate_admin_code(user_id: int, action: str, action_data: Dict[str, Any]) -> str:
     code = ''.join(random.choices(string.digits, k=6))
     users['pending_admin_actions'][f"{action}_{user_id}"] = {
@@ -551,6 +547,7 @@ async def order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(f"Order {order_id} created for {client_id} on {platform}.")
     await save_users()
     logger.info(f"Admin created order {order_id} for client {client_id}")
+    
 # Admin command
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
@@ -1270,7 +1267,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del users['pending_admin_actions'][action_id]
             await save_users()
 
-    # Admin group message handlin
+    # Admin group message handling
     if str(update.message.chat_id) == ADMIN_GROUP_ID and user_id == str(ADMIN_USER_ID):
         if pending_action and action_id_to_remove.startswith('audit_'):
             logger.info(f"Processing audit action for user {user_id}")
