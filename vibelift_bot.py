@@ -7,7 +7,7 @@ import json
 import asyncio
 from typing import Dict, Any
 from datetime import datetime, timezone
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove, CallbackQuery
 from telegram.ext import (
     Application,
     CommandHandler,
