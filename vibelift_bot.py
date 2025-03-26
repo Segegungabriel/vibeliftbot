@@ -1354,13 +1354,13 @@ async def serve_success():
 @app.route('/webhook', methods=['POST'])
 async def telegram_webhook():
     """Handle incoming Telegram updates via webhook."""
-    update = await request.get_json()
-    if not update:
-        logger.warning("Received empty webhook payload")
-        return jsonify({"status": "no update"}), 400
-    
-    logger.info(f"Received webhook update: {json.dumps(update, indent=2)}")
     try:
+        update = request.get_json()  # Synchronous call, no await needed
+        if not update:
+            logger.warning("Received empty webhook payload")
+            return jsonify({"status": "no update"}), 400
+        
+        logger.info(f"Received webhook update: {json.dumps(update, indent=2)}")
         await application.update_queue.put(Update.de_json(update, application.bot))
         return jsonify({"status": "success"}), 200
     except Exception as e:
