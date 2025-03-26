@@ -198,13 +198,13 @@ async def client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text(reply)
         return
     if user_id in users['engagers']:
-        message_text = "You’re already an engager, fam! 💼 Switch gears with /cancel or roll with /engager."
-        if update.callback_query:
-            query = update.callback_query
-            await query.answer()
-            await query.message.edit_text(message_text)
-        else:
-            await update.message.reply_text(message_text)
+    message_text = (
+        "You’re an engager stacking cash! 💼\n"
+        "You can also place orders as a client—double the fun! 😎\n"
+        "Starting as client now..."
+        )
+    else:
+    message_text = "Which platform are we juicing up today? 🎯"
         return
     if user_id in users['clients']:
         client_data = users['clients'][user_id]
@@ -292,24 +292,21 @@ async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         else:
             await update.message.reply_text(reply)
         return
-    if user_id in users['clients']:
-        message_text = "You’re a client already, boss! 🌟 Switch it up with /cancel or stick to /client."
-        if update.callback_query:
-            query = update.callback_query
-            await query.answer()
-            await query.message.edit_text(message_text)
-        else:
-            await update.message.reply_text(message_text)
-        return
     if user_id in users['engagers']:
-        keyboard = [
-            [InlineKeyboardButton("See Tasks", callback_data='tasks')],
-            [InlineKeyboardButton("Check Balance", callback_data='balance')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        message_text = "Back in the engager game, huh? 💼 Pick your move:"
-        if update.callback_query:
-            query = update.callback_query
+        message_text = "You’re already an engager, fam! 💼 Hit /tasks to stack that cash! 💸"
+    else:
+        if user_id in users['clients']:
+            message_text = (
+                "You’re a client with an order in play! 📈\n"
+                "You can also join as an engager to earn—double the vibe! 😎\n"
+                "Starting as engager now..."
+            )
+        else:
+            message_text = "Welcome to the engager squad! 💼 Ready to earn some ₦? Hit /tasks to get started!"
+        users['engagers'][user_id] = {'xp': 0, 'balance': 0, 'task_count': 0}
+        await save_users()
+    if update.callback_query:
+        query = update.callback_query
             await query.answer()
             await query.message.edit_text(message_text, reply_markup=reply_markup)
         else:
@@ -418,7 +415,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(query.from_user.id)
     data = query.data
     logger.info(f"Button clicked by user {user_id}: {data}")
-
     try:
         if data == 'client':
             await client(update, context)
@@ -461,12 +457,11 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await handle_help_button(query, data)
         elif data.startswith('cancel_'):
             await handle_cancel_button(query, user_id, data)
-        elif data.startswith('admin_') or data.startswith('approve_payout_') or data.startswith('reject_payout_') or data.startswith('priority_') or data.startswith('cancel_order_'):
+         elif data.startswith('admin_') or data.startswith('approve_payout_') or data.startswith('reject_payout_') or data.startswith('priority_') or data.startswith('cancel_order_'):
             await handle_admin_button(query, int(user_id), user_id, data)
     except Exception as e:
         logger.error(f"Error handling button {data} for user {user_id}: {e}", exc_info=True)
-        try:
-            await query.message.edit_text("Oops, something broke! Try again or hit /help! 😅", parse_mode='Markdown')
+        await query.message.edit_text("Oops, something broke! Try again or hit /help! 😅", parse_mode='Markdown')
         except Exception as e2:
             logger.warning(f"Failed to send error message to {user_id}: {e2}")
 
@@ -556,10 +551,19 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
     if user_id_str not in ADMINS:
         await query.message.edit_text("Admin zone, fam! 🛡️ No entry unless you’re the boss!")
         return
-    action = data.split('_', 2)[-1] if '_' in data else data
+    
     logger.info(f"Admin action triggered: {data}")
     try:
-        if action == 'approve_order':
+        # Split action correctly based on full prefix
+        if data.startswith('admin_'):
+            action = data.split('_', 2)[1]  # e.g., 'approve', 'reject'
+            target_id = data.split('_', 3)[-1] if len(data.split('_')) > 3 else None
+        else:
+            action = data.split('_', 1)[0]  # For non-admin_ prefixes like 'approve_payout'
+            target_id = data.split('_', 2)[-1] if len(data.split('_')) > 2 else None
+
+        # Handle initial admin commands from /admin
+        if action == 'approve' and target_id == 'order':
             if not users.get('pending_orders'):
                 await query.message.edit_text("No orders in the queue, chief! ✅ All quiet!")
             else:
@@ -569,7 +573,7 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.message.edit_text("Pick an order to green-light! 🚀", reply_markup=reply_markup)
-        elif action == 'reject_order':
+        elif action == 'reject' and target_id == 'order':
             if not users.get('pending_orders'):
                 await query.message.edit_text("Nada to nix here! ✅ Queue’s empty!")
             else:
@@ -579,7 +583,7 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.message.edit_text("Which order’s getting the boot? 🚫", reply_markup=reply_markup)
-        elif action == 'approve_task':
+        elif action == 'approve' and target_id == 'task':
             if not users.get('pending_task_completions'):
                 await query.message.edit_text("No tasks waiting, boss! ✅ All done!")
             else:
@@ -589,7 +593,7 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.message.edit_text("Which task gets the thumbs-up? 👍", reply_markup=reply_markup)
-        elif action == 'reject_task':
+        elif action == 'reject' and target_id == 'task':
             if not users.get('pending_task_completions'):
                 await query.message.edit_text("No tasks to toss! ✅ All clear!")
             else:
@@ -599,7 +603,7 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.message.edit_text("Which task’s outta here? 🚫", reply_markup=reply_markup)
-        elif action == 'approve_payout':
+        elif action == 'approve' and target_id == 'payout':
             pending_payouts = {k: v for k, v in users['engagers'].items() if v.get('awaiting_payout')}
             if not pending_payouts:
                 await query.message.edit_text("No payouts to bless! ✅ Cash flow’s chill!")
@@ -610,7 +614,7 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.message.edit_text("Who’s getting paid today? 💸", reply_markup=reply_markup)
-        elif action == 'reject_payout':
+        elif action == 'reject' and target_id == 'payout':
             pending_payouts = {k: v for k, v in users['engagers'].items() if v.get('awaiting_payout')}
             if not pending_payouts:
                 await query.message.edit_text("No payouts to deny! ✅ All good!")
@@ -621,7 +625,7 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.message.edit_text("Who’s payout’s getting the axe? 🚫", reply_markup=reply_markup)
-        elif action == 'set_priority':
+        elif action == 'set' and target_id == 'priority':
             if not users.get('active_orders'):
                 await query.message.edit_text("No orders to juice up! ✅ All quiet!")
             else:
@@ -631,7 +635,7 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.message.edit_text("Which order’s jumping the line? ⏫", reply_markup=reply_markup)
-        elif action == 'cancel_order':
+        elif action == 'cancel' and target_id == 'order':
             if not users.get('active_orders'):
                 await query.message.edit_text("No orders to zap! ✅ All chill!")
             else:
@@ -641,46 +645,85 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.message.edit_text("Which order’s biting the dust? 🚫", reply_markup=reply_markup)
-        elif action == 'generate_code':
+        elif action == 'generate' and target_id == 'code':
             code = generate_admin_code()
             users['pending_admin_actions'][code] = {'type': 'admin_code', 'used': False}
             await save_users()
             await query.message.edit_text(
                 f"🎟️ Fresh admin code: *{code}*\n"
-                "Perfect for bonuses or VIP tricks—use it wisely!"
+                "Perfect for bonuses or VIP tricks—use it wisely!",
+                parse_mode='Markdown'
             )
             await update_admin_dashboard(query)
+
+        # Handle specific actions
         elif data.startswith('admin_approve_order_'):
-            order_id = data.split('_', 3)[3]
+            order_id = data.replace('admin_approve_order_', '')
             if order_id in users['pending_orders']:
                 order = users['pending_orders'].pop(order_id)
                 client_id = order['client_id']
                 users['active_orders'][order_id] = order
                 if str(client_id) in users['clients']:
-                    users['clients'][str(client_id)]['step'] = 'completed'
+                    users['clients'][str(client_id)]['step'] = 'active'  # Changed to 'active' for clarity
                 await save_users()
-                await query.message.edit_text(f"Order *{order_id}* is live—boom! 💥")
-                await application.bot.send_message(
-                    int(client_id),
-                    f"🎉 Your order *{order_id}* is approved and rolling! 🚀 Check /status!"
+                await query.message.edit_text(
+                    f"Order *{order_id}* is live—boom! 💥\n"
+                    "Next: Generate tasks for engagers!",
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("Generate Tasks 📋", callback_data=f'admin_generate_tasks_{order_id}')],
+                        [InlineKeyboardButton("Back to Dashboard", callback_data='admin_dashboard')]
+                    ])
                 )
-                await update_admin_dashboard(query)
+                await application.bot.send_message(
+                    chat_id=int(client_id),
+                    text=f"🎉 Your order *{order_id}* is approved and rolling! 🚀 Check /status!",
+                    parse_mode='Markdown'
+                )
+            elif order_id in users['active_orders']:
+                await query.message.edit_text(f"Order *{order_id}* already vibin’—no double dip! ✅", parse_mode='Markdown')
         elif data.startswith('admin_reject_order_'):
-            order_id = data.split('_', 3)[3]
+            order_id = data.replace('admin_reject_order_', '')
             if order_id in users['pending_orders']:
                 order = users['pending_orders'].pop(order_id)
                 client_id = order['client_id']
                 if str(client_id) in users['clients']:
                     del users['clients'][str(client_id)]
                 await save_users()
-                await query.message.edit_text(f"Order *{order_id}* axed! 🚫 Tough call, boss!")
+                await query.message.edit_text(f"Order *{order_id}* axed! 🚫 Tough call, boss!", parse_mode='Markdown')
                 await application.bot.send_message(
-                    int(client_id),
-                    f"😕 Your order *{order_id}* got the boot—hit up support or retry with /client!"
+                    chat_id=int(client_id),
+                    text=f"😕 Your order *{order_id}* got the boot—hit up support or retry with /client!",
+                    parse_mode='Markdown'
                 )
                 await update_admin_dashboard(query)
+        elif data.startswith('admin_generate_tasks_'):
+            order_id = data.replace('admin_generate_tasks_', '')
+            if order_id in users['active_orders']:
+                order = users['active_orders'][order_id]
+                # Simple task generation logic (expand as needed)
+                tasks = []
+                for metric, count in [('follows', order['follows']), ('likes', order['likes']), ('comments', order['comments'])]:
+                    for _ in range(count):
+                        task_id = str(uuid.uuid4())
+                        users['tasks'][task_id] = {
+                            'order_id': order_id,
+                            'type': metric[:-1],  # 'follow', 'like', 'comment'
+                            'handle_or_url': order['handle_or_url'],
+                            'status': 'pending'
+                        }
+                        tasks.append(task_id)
+                await save_users()
+                await query.message.edit_text(
+                    f"Tasks for order *{order_id}* generated—{len(tasks)} vibes ready! 📋\n"
+                    "Engagers can grab ‘em with /tasks!",
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("Back to Dashboard", callback_data='admin_dashboard')]
+                    ])
+                )
         elif data.startswith('admin_approve_task_'):
-            completion_id = data.split('_', 3)[3]
+            completion_id = data.replace('admin_approve_task_', '')
             if completion_id in users['pending_task_completions']:
                 completion = users['pending_task_completions'].pop(completion_id)
                 engager_id = completion['engager_id']
@@ -688,27 +731,31 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
                 earnings = 20
                 users['engagers'][engager_id]['earnings'] = users['engagers'][engager_id].get('earnings', 0) + earnings
                 users['engagers'][engager_id]['xp'] = users['engagers'][engager_id].get('xp', 0) + 10
-                if task_id in users['active_orders']:
-                    order = users['active_orders'][task_id]
-                    for metric in ['follows', 'likes', 'comments']:
-                        if order.get(metric, 0) > 0:
-                            order[metric] -= 1
-                    if all(order.get(metric, 0) == 0 for metric in ['follows', 'likes', 'comments']):
-                        users['active_orders'].pop(task_id)
-                        client_id = order['client_id']
-                        await application.bot.send_message(
-                            chat_id=int(client_id),
-                            text=f"🎉 Your order *{task_id}* is fully vibed out—donezo!"
-                        )
+                if task_id in users['tasks']:
+                    task = users['tasks'].pop(task_id)
+                    order_id = task['order_id']
+                    if order_id in users['active_orders']:
+                        order = users['active_orders'][order_id]
+                        metric = task['type'] + 's'  # e.g., 'follows'
+                        order[metric] -= 1
+                        if all(order.get(m, 0) <= 0 for m in ['follows', 'likes', 'comments']):
+                            client_id = order['client_id']
+                            users['active_orders'].pop(order_id)
+                            await application.bot.send_message(
+                                chat_id=int(client_id),
+                                text=f"🎉 Your order *{order_id}* is fully vibed out—donezo!",
+                                parse_mode='Markdown'
+                            )
                 await save_users()
-                await query.message.edit_text(f"Task *{completion_id}* approved—{engager_id} scores ₦{earnings}! 💰")
+                await query.message.edit_text(f"Task *{completion_id}* approved—{engager_id} scores ₦{earnings}! 💰", parse_mode='Markdown')
                 await application.bot.send_message(
                     chat_id=int(engager_id),
-                    text=f"🏆 Task *{task_id}* approved! You bagged ₦{earnings} + 10 XP—check /balance!"
+                    text=f"🏆 Task *{task_id}* approved! You bagged ₦{earnings} + 10 XP—check /balance!",
+                    parse_mode='Markdown'
                 )
                 await update_admin_dashboard(query)
         elif data.startswith('admin_reject_task_'):
-            completion_id = data.split('_', 3)[3]
+            completion_id = data.replace('admin_reject_task_', '')
             if completion_id in users['pending_task_completions']:
                 completion = users['pending_task_completions'].pop(completion_id)
                 engager_id = completion['engager_id']
@@ -716,14 +763,15 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
                 if task_id in users['engagers'][engager_id].get('claims', []):
                     users['engagers'][engager_id]['claims'].remove(task_id)
                 await save_users()
-                await query.message.edit_text(f"Task *{completion_id}* nixed! 🚫 Back to the drawing board!")
+                await query.message.edit_text(f"Task *{completion_id}* nixed! 🚫 Back to the drawing board!", parse_mode='Markdown')
                 await application.bot.send_message(
                     chat_id=int(engager_id),
-                    text=f"😬 Task *{task_id}* got rejected—chat with support for the tea!"
+                    text=f"😬 Task *{task_id}* got rejected—chat with support for the tea!",
+                    parse_mode='Markdown'
                 )
                 await update_admin_dashboard(query)
         elif data.startswith('approve_payout_'):
-            target_user_id = data.split('_', 2)[2]
+            target_user_id = data.replace('approve_payout_', '')
             if target_user_id in users['engagers'] and users['engagers'][target_user_id].get('awaiting_payout'):
                 user_data = users['engagers'][target_user_id]
                 amount = user_data['earnings'] + user_data['signup_bonus']
@@ -731,45 +779,75 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
                 user_data['signup_bonus'] = 0
                 user_data['awaiting_payout'] = False
                 await save_users()
-                await query.message.edit_text(f"Payout of ₦{amount} for *{target_user_id}* sent—cha-ching! 💸")
+                await query.message.edit_text(f"Payout of ₦{amount} for *{target_user_id}* sent—cha-ching! 💸", parse_mode='Markdown')
                 await application.bot.send_message(
                     chat_id=int(target_user_id),
-                    text=f"💰 Your ₦{amount} payout just dropped—check your bank, baller!"
+                    text=f"💰 Your ₦{amount} payout just dropped—check your bank, baller!",
+                    parse_mode='Markdown'
                 )
                 await update_admin_dashboard(query)
         elif data.startswith('reject_payout_'):
-            target_user_id = data.split('_', 2)[2]
+            target_user_id = data.replace('reject_payout_', '')
             if target_user_id in users['engagers'] and users['engagers'][target_user_id].get('awaiting_payout'):
                 users['engagers'][target_user_id]['awaiting_payout'] = False
                 await save_users()
-                await query.message.edit_text(f"Payout for *{target_user_id}* denied! 🚫 Tough love!")
+                await query.message.edit_text(f"Payout for *{target_user_id}* denied! 🚫 Tough love!", parse_mode='Markdown')
                 await application.bot.send_message(
                     chat_id=int(target_user_id),
-                    text=f"😕 Your payout got a no-go—hit up support for deets!"
+                    text=f"😕 Your payout got a no-go—hit up support for deets!",
+                    parse_mode='Markdown'
                 )
                 await update_admin_dashboard(query)
         elif data.startswith('priority_'):
-            order_id = data.split('_', 1)[1]
+            order_id = data.replace('priority_', '')
             if order_id in users['active_orders']:
                 users['active_orders'][order_id]['priority'] = True
                 await save_users()
-                await query.message.edit_text(f"Order *{order_id}* bumped to the front—VIP style! ⏫")
+                await query.message.edit_text(f"Order *{order_id}* bumped to the front—VIP style! ⏫", parse_mode='Markdown')
                 await update_admin_dashboard(query)
         elif data.startswith('cancel_order_'):
-            order_id = data.split('_', 2)[2]
+            order_id = data.replace('cancel_order_', '')
             if order_id in users['active_orders']:
                 order = users['active_orders'].pop(order_id)
                 client_id = order['client_id']
                 await save_users()
-                await query.message.edit_text(f"Order *{order_id}* zapped—gone for good! 🚫")
+                await query.message.edit_text(f"Order *{order_id}* zapped—gone for good! 🚫", parse_mode='Markdown')
                 await application.bot.send_message(
                     chat_id=int(client_id),
-                    text=f"😱 Your order *{order_id}* got canceled by the boss—reach out to support!"
+                    text=f"😱 Your order *{order_id}* got canceled by the boss—reach out to support!",
+                    parse_mode='Markdown'
                 )
                 await update_admin_dashboard(query)
+        elif data == 'admin_dashboard':
+            await update_admin_dashboard(query)
+
     except Exception as e:
-        logger.error(f"Admin button error: {e}")
-        await application.bot.send_message(chat_id=user_id, text=f"Button’s acting up! 😵 Error: {str(e)}")
+        logger.error(f"Admin button error: {e}", exc_info=True)
+        await query.message.edit_text(f"Button’s acting up, fam! 😵 Error: {str(e)}—tell the tech crew!", parse_mode='Markdown')
+
+async def update_admin_dashboard(query: CallbackQuery) -> None:
+    pending_orders = len(users.get('pending_orders', {}))
+    active_orders = len(users.get('active_orders', {}))
+    pending_tasks = len(users.get('pending_task_completions', {}))
+    pending_payouts = len([u for u in users['engagers'].values() if u.get('awaiting_payout')])
+    dashboard_text = (
+        "🛠️ *Admin Command Center* 🛠️\n\n"
+        f"📈 *Pending Orders*: {pending_orders} {'✅' if pending_orders == 0 else '⏳'}\n"
+        f"🚀 *Active Orders*: {active_orders} {'✅' if active_orders == 0 else '✈️'}\n"
+        f"📋 *Pending Tasks*: {pending_tasks} {'✅' if pending_tasks == 0 else '⏳'}\n"
+        f"💸 *Pending Payouts*: {pending_payouts} {'✅' if pending_payouts == 0 else '⏳'}"
+    )
+    await query.message.edit_text(dashboard_text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("Approve Order ✅", callback_data='admin_approve_order'),
+         InlineKeyboardButton("Reject Order ❌", callback_data='admin_reject_order')],
+        [InlineKeyboardButton("Approve Task ✅", callback_data='admin_approve_task'),
+         InlineKeyboardButton("Reject Task ❌", callback_data='admin_reject_task')],
+        [InlineKeyboardButton("Approve Payout ✅", callback_data='admin_approve_payout'),
+         InlineKeyboardButton("Reject Payout ❌", callback_data='admin_reject_payout')],
+        [InlineKeyboardButton("Set Priority ⏫", callback_data='admin_set_priority'),
+         InlineKeyboardButton("Cancel Order 🚫", callback_data='admin_cancel_order')],
+        [InlineKeyboardButton("Generate Code 🎟️", callback_data='admin_generate_code')]
+    ]))
 
 async def update_admin_dashboard(query: CallbackQuery) -> None:
     message = "🛠️ *Admin Command Center* 🛠️\n\n"
