@@ -1123,6 +1123,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 return
         await update.message.reply_text("Invalid or expired code!")
 
+# Root route for health checks
+@app.route('/', methods=['GET', 'HEAD'])
+async def root():
+    return jsonify({"status": "Bot is running"}), 200
+
 # Webhook endpoint
 @app.route('/webhook', methods=['POST'])
 async def webhook():
@@ -1197,8 +1202,8 @@ async def main():
     application.add_error_handler(error_handler)
 
     # Set up webhook
-    await application.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
-    logger.info(f"Webhook set to {WEBHOOK_URL}/webhook")
+    await application.bot.set_webhook(url=WEBHOOK_URL)  # Updated to remove extra /webhook
+    logger.info(f"Webhook set to {WEBHOOK_URL}")
 
     # Wrap Flask app for ASGI
     asgi_app = WsgiToAsgi(app)
