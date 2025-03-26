@@ -10,7 +10,7 @@ from datetime import datetime
 import requests  # Added for payment API calls
 
 from flask import Flask, request, jsonify
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery  # Added CallbackQuery
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -547,7 +547,7 @@ async def order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(f"Order {order_id} created for {client_id} on {platform}.")
     await save_users()
     logger.info(f"Admin created order {order_id} for client {client_id}")
-    
+
 # Admin command
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
