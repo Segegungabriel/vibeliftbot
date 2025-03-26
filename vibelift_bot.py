@@ -448,35 +448,46 @@ async def initialize_paystack_transaction(order_id: str, amount: int, email: str
 async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     logger.info(f"Received /pay command from user {user_id}")
-    if user_id not in users['clients']:
-        await update.message.reply_text("No order to pay for yet, champ! 🌟 Kick off with /client!")
+    if user_id not in users['clients'] or users['clients'][user_id]['step'] != 'awaiting_payment':
+        await update.message.reply_text("No order to pay for yet, fam! 🌟 Start with /client!")
         return
     client_data = users['clients'][user_id]
-    if client_data['step'] != 'awaiting_payment':
-        await update.message.reply_text("Nothing to pay right now! 😏 Start an order with /client.")
-        return
     order_id = client_data['order_id']
-    if order_id not in users['pending_orders']:
-        await update.message.reply_text("Order’s gone AWOL! 🚫 Restart with /client.")
-        return
     order = users['pending_orders'][order_id]
-    amount = order['price']
-    email = f"{user_id}@vibeliftbot.com"  # Placeholder; replace with real email if available
-    response = await initialize_paystack_transaction(order_id, amount, email)
-    if "error" in response:
-        await update.message.reply_text("Payment setup flopped! 😱 Retry or ping support!")
-        return
-    if response.get("status") and response["data"].get("authorization_url"):
-        payment_url = response["data"]["authorization_url"]
-        await update.message.reply_text(
-            f"Time to drop ₦{amount} for order *{order_id}*! 💸\n"
-            "[Order ➡️ *Payment* ➡️ Approval ➡️ Active]\n"
-            f"Hit this: {payment_url} ➡️\n"
-            "Once paid, it’s review time!",
-            parse_mode='Markdown'
-        )
-    else:
-        await update.message.reply_text("Payment link didn’t vibe! 😵 Retry or call for backup!")
+    amount = order['price'] * 100  # Paystack uses kobo
+    payment_data = {
+        "amount": amount,
+        "email": f"{user_id}@vibeliftbot.com",  # Dummy email
+        "reference": order_id,
+        "callback_url": f"https://vibeliftbot.onrender.com/static/success.html"
+    }
+    response = await initialize_paystack_transaction(payment_data)
+    if "error" in response or not response.get("data"):
+        logger.error(f"Paystack API error: {response}")
+        # If duplicate reference, generate a new order_id
+        if response.get("code") == "duplicate_reference":
+            new_order_id = str(uuid.uuid4())
+            order['reference'] = new_order_id  # Update reference
+            users['pending_orders'][new_order_id] = order
+            del users['pending_orders'][order_id]
+            client_data['order_id'] = new_order_id
+            payment_data["reference"] = new_order_id
+            response = await initialize_paystack_transaction(payment_data)
+            if "error" in response or not response.get("data"):
+                await update.message.reply_text("Payment’s tripping! 😵 Try again or hit up support!")
+                return
+            order_id = new_order_id
+        else:
+            await update.message.reply_text("Payment’s tripping! 😵 Try again or hit up support!")
+            return
+    auth_url = response["data"]["authorization_url"]
+    await update.message.reply_text(
+        f"Time to make it rain! 💸\n"
+        f"Order *{order_id}*: ₦{order['price']}\n"
+        f"[Pay Here]({auth_url})",
+        parse_mode='Markdown',
+        disable_web_page_preview=True
+    )
 
 # Withdraw command
 async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -615,29 +626,18 @@ async def paystack_webhook_debug():
 # Admin dashboard helper
 async def update_admin_dashboard(query: CallbackQuery) -> None:
     message = "🛠️ *Admin Command Center* 🛠️\n\n"
-    # Pending orders
     message += "📊 *Pending Orders*:\n"
     pending_orders = users.get('pending_orders', {})
     message += f"{len(pending_orders)} waiting\n" if pending_orders else "All clear! ✅\n"
-    # Pending tasks
     message += "\n📋 *Pending Tasks*:\n"
     pending_tasks = users.get('pending_task_completions', {})
     message += f"{len(pending_tasks)} up for review\n" if pending_tasks else "Nada here! ✅\n"
-    # Pending payouts
     message += "\n💸 *Pending Payouts*:\n"
     pending_payouts = {k: v for k, v in users['engagers'].items() if v.get('awaiting_payout')}
-    if pending_payouts:
-        message += f"{len(pending_payouts)} ready to roll:\n"
-        for uid in pending_payouts:
-            amount = pending_payouts[uid]['earnings'] + pending_payouts[uid]['signup_bonus']
-            message += f"- User {uid}: ₦{amount}\n"
-    else:
-        message += "No cash-outs yet! ✅\n"
-    # Active orders
+    message += f"{len(pending_payouts)} ready\n" if pending_payouts else "No cash-outs yet! ✅\n"
     message += "\n🚀 *Active Orders*:\n"
     active_orders = users.get('active_orders', {})
     message += f"{len(active_orders)} in flight\n" if active_orders else "All quiet! ✅\n"
-    # Buttons
     keyboard = [
         [InlineKeyboardButton("Approve Order ✅", callback_data="admin_approve_order"),
          InlineKeyboardButton("Reject Order ❌", callback_data="admin_reject_order")],
@@ -650,7 +650,10 @@ async def update_admin_dashboard(query: CallbackQuery) -> None:
         [InlineKeyboardButton("Generate Code 🎟️", callback_data="admin_generate_code")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.message.edit_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+    try:
+        await query.message.edit_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Failed to update admin dashboard: {e}")
 
 # Button handler
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -889,104 +892,152 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
         await query.message.edit_text("Which task’s outta here? 🚫", reply_markup=reply_markup)
         logger.info("Sent task rejection options")
     elif action == 'approve_payout':
-        pending_payouts = {k: v for k, v in users['engagers'].items() if v.get('awaiting_payout')}
-        if not pending_payouts:
-            await query.message.edit_text("No payouts to bless! ✅ Cash flow’s chill!")
-            logger.info("No pending payouts to approve")
-            return
-        keyboard = [
-            [InlineKeyboardButton(f"User {uid}: ₦{v['earnings'] + v['signup_bonus']}", callback_data=f'approve_payout_{uid}')]
-            for uid, v in pending_payouts.items()
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.edit_text("Who’s getting paid today? 💸", reply_markup=reply_markup)
-        logger.info("Sent payout approval options")
-    elif action == 'reject_payout':
-        pending_payouts = {k: v for k, v in users['engagers'].items() if v.get('awaiting_payout')}
-        if not pending_payouts:
-            await query.message.edit_text("No payouts to deny! ✅ All good!")
-            logger.info("No pending payouts to reject")
-            return
-        keyboard = [
-            [InlineKeyboardButton(f"User {uid}: ₦{v['earnings'] + v['signup_bonus']}", callback_data=f'reject_payout_{uid}')]
-            for uid, v in pending_payouts.items()
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.edit_text("Who’s payout’s getting the axe? 🚫", reply_markup=reply_markup)
-        logger.info("Sent payout rejection options")
-    elif action == 'set_priority':
-        if not users.get('active_orders'):
-            await query.message.edit_text("No orders to juice up! ✅ All quiet!")
-            logger.info("No active orders to prioritize")
-            return
-        keyboard = [
-            [InlineKeyboardButton(f"Order {order_id}", callback_data=f'priority_{order_id}')]
-            for order_id in users['active_orders'].keys()
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.edit_text("Which order’s jumping the line? ⏫", reply_markup=reply_markup)
-        logger.info("Sent priority options")
-    elif action == 'cancel_order':
-        if not users.get('active_orders'):
-            await query.message.edit_text("No orders to zap! ✅ All chill!")
-            logger.info("No active orders to cancel")
-            return
-        keyboard = [
-            [InlineKeyboardButton(f"Order {order_id}", callback_data=f'cancel_order_{order_id}')]
-            for order_id in users['active_orders'].keys()
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.edit_text("Which order’s biting the dust? 🚫", reply_markup=reply_markup)
-        logger.info("Sent cancel order options")
-    elif action == 'generate_code':
-        code = generate_admin_code()
-        users['pending_admin_actions'][code] = {'type': 'admin_code', 'used': False}
-        await save_users()
-        await query.message.edit_text(
-            f"🎟️ Fresh admin code: *{code}*\n"
-            "Perfect for bonuses or VIP tricks—use it wisely!"
-        )
-        logger.info(f"Generated admin code: {code}")
-        await update_admin_dashboard(query)
-    elif data.startswith('admin_approve_order_'):
-        order_id = data.split('_', 3)[3]
-        if order_id in users['pending_orders']:
-            order = users['pending_orders'].pop(order_id)
-            client_id = order['client_id']
-            users['active_orders'][order_id] = order
-            if str(client_id) in users['clients']:
-                users['clients'][str(client_id)]['step'] = 'completed'
+        pending_payouts = {k: v for k, v in users['engagers'].items() if v.get('awaiting_payout')}async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: str, data: str) -> None:
+    if user_id_str != str(ADMIN_USER_ID):
+        await query.message.edit_text("Admin zone, fam! 🛡️ No entry unless you’re the boss!")
+        return
+    action = data.split('_', 2)[-1] if '_' in data else data
+    logger.info(f"Admin action triggered: {data}")
+    try:
+        if action == 'approve_order':
+            if not users.get('pending_orders'):
+                await query.message.edit_text("No orders in the queue, chief! ✅ All quiet!")
+                logger.info("No pending orders to approve")
+            else:
+                keyboard = [
+                    [InlineKeyboardButton(f"Order {order_id}", callback_data=f'admin_approve_order_{order_id}')]
+                    for order_id in users['pending_orders'].keys()
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.message.edit_text("Pick an order to green-light! 🚀", reply_markup=reply_markup)
+                logger.info("Sent order approval options")
+        elif action == 'reject_order':
+            if not users.get('pending_orders'):
+                await query.message.edit_text("Nada to nix here! ✅ Queue’s empty!")
+                logger.info("No pending orders to reject")
+            else:
+                keyboard = [
+                    [InlineKeyboardButton(f"Order {order_id}", callback_data=f'admin_reject_order_{order_id}')]
+                    for order_id in users['pending_orders'].keys()
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.message.edit_text("Which order’s getting the boot? 🚫", reply_markup=reply_markup)
+                logger.info("Sent order rejection options")
+        elif action == 'approve_task':
+            if not users.get('pending_task_completions'):
+                await query.message.edit_text("No tasks waiting, boss! ✅ All done!")
+                logger.info("No pending tasks to approve")
+            else:
+                keyboard = [
+                    [InlineKeyboardButton(f"Task {completion_id}", callback_data=f'admin_approve_task_{completion_id}')]
+                    for completion_id in users['pending_task_completions'].keys()
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.message.edit_text("Which task gets the thumbs-up? 👍", reply_markup=reply_markup)
+                logger.info("Sent task approval options")
+        elif action == 'reject_task':
+            if not users.get('pending_task_completions'):
+                await query.message.edit_text("No tasks to toss! ✅ All clear!")
+                logger.info("No pending tasks to reject")
+            else:
+                keyboard = [
+                    [InlineKeyboardButton(f"Task {completion_id}", callback_data=f'admin_reject_task_{completion_id}')]
+                    for completion_id in users['pending_task_completions'].keys()
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.message.edit_text("Which task’s outta here? 🚫", reply_markup=reply_markup)
+                logger.info("Sent task rejection options")
+        elif action == 'approve_payout':
+            pending_payouts = {k: v for k, v in users['engagers'].items() if v.get('awaiting_payout')}
+            if not pending_payouts:
+                await query.message.edit_text("No payouts to bless! ✅ Cash flow’s chill!")
+                logger.info("No pending payouts to approve")
+            else:
+                keyboard = [
+                    [InlineKeyboardButton(f"User {uid}: ₦{v['earnings'] + v['signup_bonus']}", callback_data=f'approve_payout_{uid}')]
+                    for uid, v in pending_payouts.items()
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.message.edit_text("Who’s getting paid today? 💸", reply_markup=reply_markup)
+                logger.info("Sent payout approval options")
+        elif action == 'reject_payout':
+            pending_payouts = {k: v for k, v in users['engagers'].items() if v.get('awaiting_payout')}
+            if not pending_payouts:
+                await query.message.edit_text("No payouts to deny! ✅ All good!")
+                logger.info("No pending payouts to reject")
+            else:
+                keyboard = [
+                    [InlineKeyboardButton(f"User {uid}: ₦{v['earnings'] + v['signup_bonus']}", callback_data=f'reject_payout_{uid}')]
+                    for uid, v in pending_payouts.items()
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.message.edit_text("Who’s payout’s getting the axe? 🚫", reply_markup=reply_markup)
+                logger.info("Sent payout rejection options")
+        elif action == 'set_priority':
+            if not users.get('active_orders'):
+                await query.message.edit_text("No orders to juice up! ✅ All quiet!")
+                logger.info("No active orders to prioritize")
+            else:
+                keyboard = [
+                    [InlineKeyboardButton(f"Order {order_id}", callback_data=f'priority_{order_id}')]
+                    for order_id in users['active_orders'].keys()
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.message.edit_text("Which order’s jumping the line? ⏫", reply_markup=reply_markup)
+                logger.info("Sent priority options")
+        elif action == 'cancel_order':
+            if not users.get('active_orders'):
+                await query.message.edit_text("No orders to zap! ✅ All chill!")
+                logger.info("No active orders to cancel")
+            else:
+                keyboard = [
+                    [InlineKeyboardButton(f"Order {order_id}", callback_data=f'cancel_order_{order_id}')]
+                    for order_id in users['active_orders'].keys()
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.message.edit_text("Which order’s biting the dust? 🚫", reply_markup=reply_markup)
+                logger.info("Sent cancel order options")
+        elif action == 'generate_code':
+            code = generate_admin_code()
+            users['pending_admin_actions'][code] = {'type': 'admin_code', 'used': False}
             await save_users()
-            await query.message.edit_text(f"Order *{order_id}* is live—boom! 💥")
-            logger.info(f"Approved order {order_id}")
-            try:
-                await application.bot.send_message(
-                    chat_id=int(client_id),
-                    text=f"🎉 Your order *{order_id}* is approved and rolling! 🚀 Check /status!"
-                )
-                logger.info(f"Notified client {client_id} of approval")
-            except Exception as e:
-                logger.warning(f"Failed to notify client {client_id}: {e} ⚠️")
+            await query.message.edit_text(
+                f"🎟️ Fresh admin code: *{code}*\n"
+                "Perfect for bonuses or VIP tricks—use it wisely!"
+            )
+            logger.info(f"Generated admin code: {code}")
             await update_admin_dashboard(query)
-        else:
-            await query.message.edit_text(f"Order *{order_id}* ghosted us! 👻 Already handled?")
-            logger.info(f"Order {order_id} not found for approval")
-    elif data.startswith('admin_reject_order_'):
-        order_id = data.split('_', 3)[3]
-        if order_id in users['pending_orders']:
-            order = users['pending_orders'].pop(order_id)
-            client_id = order['client_id']
-            if str(client_id) in users['clients']:
-                del users['clients'][str(client_id)]
-            await save_users()
-            await query.message.edit_text(f"Order *{order_id}* axed! 🚫 Tough call, boss!")
-            logger.info(f"Rejected order {order_id}")
-            try:
-                await application.bot.send_message(
-                    chat_id=int(client_id),
-                    text=f"😕 Your order *{order_id}* got the boot—hit up support or retry with /client!"
-                )
-                logger.info(f"Notified client {client_id} of rejection")
+        elif data.startswith('admin_approve_order_'):
+            order_id = data.split('_', 3)[3]
+            if order_id in users['pending_orders']:
+                order = users['pending_orders'].pop(order_id)
+                client_id = order['client_id']
+                users['active_orders'][order_id] = order
+                if str(client_id) in users['clients']:
+                    users['clients'][str(client_id)]['step'] = 'completed'
+                await save_users()
+                await query.message.edit_text(f"Order *{order_id}* is live—boom! 💥")
+                logger.info(f"Approved order {order_id}")
+                await application.bot.send_message(int(client_id), f"🎉 Your order *{order_id}* is approved and rolling! 🚀 Check /status!")
+                await update_admin_dashboard(query)
+            else:
+                await query.message.edit_text(f"Order *{order_id}* ghosted us! 👻 Already handled?")
+                logger.info(f"Order {order_id} not found for approval")
+        elif data.startswith('admin_reject_order_'):
+            order_id = data.split('_', 3)[3]
+            if order_id in users['pending_orders']:
+                order = users['pending_orders'].pop(order_id)
+                client_id = order['client_id']
+                if str(client_id) in users['clients']:
+                    del users['clients'][str(client_id)]
+                await save_users()
+                await query.message.edit_text(f"Order *{order_id}* axed! 🚫 Tough call, boss!")
+                logger.info(f"Rejected order {order_id}")
+                await application.bot.send_message(int(client_id), f"😕 Your order *{order_id}* got the boot—hit up support or retry with /client!")
+                await update_admin_dashboard(query)
+            else:
+                await query.message.edit_text(f"Order *{order_id}* vanished! 👻 Already sorted?")
+                logger.info(f"Order {order_id} not found for rejection")
             except Exception as e:
                 logger.warning(f"Failed to notify client {client_id}: {e} ⚠️")
             await update_admin_dashboard(query)
@@ -1458,27 +1509,55 @@ async def serve_success():
     reference = request.args.get('reference', request.args.get('trxref', ''))
     if not reference or reference not in users['pending_orders']:
         logger.warning(f"Success page hit with invalid/missing reference: {request.args}")
-        return Response(
-            "Oops, order’s lost in the vibe! 🚫 Check /status or retry with /client!",
-            status=400
-        )
+        return Response("Oops, order’s lost in the vibe! 🚫 Check /status or retry with /client!", status=400)
     order_id = reference
     order = users['pending_orders'][order_id]
     client_id = order['client_id']
-    # Fallback notification (temporary until webhook is confirmed)
+    # Move to awaiting_approval (temp fix)
+    users['clients'][client_id]['step'] = 'awaiting_approval'
+    await save_users()
+    # Notify client
     try:
         await application.bot.send_message(
             chat_id=int(client_id),
-            text=(
-                f"🎉 Cha-ching! Your payment for order *{order_id}* is golden! 💰\n"
-                "[Order ➡️ Payment ➡️ *Approval* ➡️ Active]\n"
-                "Admins are on it—check /status for updates!"
-            ),
-            parse_mode='Markdown'
+            text=f"🎉 Cha-ching! Your payment for order *{order_id}* is golden! 💰\n[Order ➡️ Payment ➡️ *Approval* ➡️ Active]\nAdmins are on it—check /status!"
         )
         logger.info(f"Fallback: Notified client {client_id} from success page")
     except Exception as e:
         logger.warning(f"Fallback notification failed for {client_id}: {e} ⚠️")
+    # Notify admin group
+    order_message = (
+        f"🌟 *New Order Up for Grabs* (ID: {order_id}) 🌟\n"
+        f"Client ID: {client_id}\n"
+        f"Platform: {order['platform'].capitalize()}\n"
+        f"Handle/URL: {order['handle_or_url']}\n"
+        f"Follows: {order['follows']} | Likes: {order['likes']} | Comments: {order['comments']}\n"
+        f"Price: ₦{order['price']}"
+    )
+    keyboard = [
+        [InlineKeyboardButton("Approve ✅", callback_data=f"admin_approve_order_{order_id}"),
+         InlineKeyboardButton("Reject ❌", callback_data=f"admin_reject_order_{order_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    try:
+        if 'screenshot' in order and order['screenshot']:
+            await application.bot.send_photo(
+                chat_id=REVIEW_GROUP_CHAT_ID,
+                photo=order['screenshot'],
+                caption=order_message,
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        else:
+            await application.bot.send_message(
+                chat_id=REVIEW_GROUP_CHAT_ID,
+                text=order_message,
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        logger.info(f"Fallback: Sent order {order_id} to review group {REVIEW_GROUP_CHAT_ID}")
+    except Exception as e:
+        logger.warning(f"Failed to notify review group {REVIEW_GROUP_CHAT_ID}: {e} ⚠️")
     html_content = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -1504,7 +1583,7 @@ async def serve_success():
     """
     logger.info(f"Serving success page for order {order_id}")
     return Response(html_content, mimetype='text/html')
-
+    
 # Daily tips scheduler
 async def send_daily_tips():
     while True:
