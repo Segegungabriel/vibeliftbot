@@ -1224,7 +1224,7 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await query.message.edit_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
     else:
         await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
-        
+
 # Cancel command
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
@@ -1437,22 +1437,92 @@ async def root():
     return jsonify({"status": "Vibeliftbot’s alive and kicking! 🚀"}), 200
 
 # Webhook endpoint
-@app.route('/webhook', methods=['POST'])
-async def webhook():
+@app.route('/paystack-webhook', methods=['POST'])
+async def paystack_webhook():
+    payload = await request.get_json()
+    logger.info(f"Paystack webhook received with payload: {json.dumps(payload)}")
+    
+    # Only process charge.success events
+    if payload.get('event') != 'charge.success':
+        logger.info(f"Ignoring non-success event: {payload.get('event')}")
+        return jsonify({"status": "ignored"}), 200
+    
+    reference = payload['data']['reference']
+    order_id = payload['data']['metadata'].get('order_id')  # Use metadata.order_id for lookup
+    logger.info(f"Processing webhook for reference: {reference}, order_id: {order_id}")
+    
+    # Verify the transaction with Paystack
+    url = f"https://api.paystack.co/transaction/verify/{reference}"
+    headers = {"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers) as resp:
+            verify_data = await resp.json()
+            logger.info(f"Paystack verify response: {resp.status} - {json.dumps(verify_data)}")
+            if resp.status != 200 or not verify_data['status']:
+                logger.error(f"Verification failed for reference {reference}")
+                return jsonify({"status": "verification failed"}), 400
+    
+    # Check if the order exists using order_id from metadata
+    if not order_id or order_id not in users['pending_orders']:
+        logger.warning(f"Order {order_id or reference} not found in pending_orders")
+        return jsonify({"status": "order not found"}), 404
+    
+    # Move order to active_orders
+    order = users['pending_orders'].pop(order_id)
+    client_id = order['client_id']
+    order['paystack_reference'] = reference  # Store Paystack reference for tracking
+    users['active_orders'][order_id] = order
+    users['clients'][client_id]['step'] = 'awaiting_approval'
+    await save_users()
+    
+    # Notify client
     try:
-        update = Update.de_json(request.get_json(), application.bot)
-        if update is None:
-            logger.error("Received invalid update from Telegram")
-            return jsonify({"status": "error", "message": "Invalid update"}), 400
-        if not application.updater:
-            logger.error("Application not initialized yet")
-            return jsonify({"status": "error", "message": "Application not initialized"}), 503
-        await application.process_update(update)
-        return jsonify({"status": "success"}), 200
+        await application.bot.send_message(
+            chat_id=int(client_id),
+            text=f"🎉 Payment for order *{order_id}* confirmed! 💰\n[Order ➡️ Payment ➡️ *Approval* ➡️ Active]\nAdmins are on it—check /status!",
+            parse_mode='Markdown'
+        )
+        logger.info(f"Notified client {client_id} of payment success")
     except Exception as e:
-        logger.error(f"Error processing webhook update: {str(e)}")
-        return jsonify({"status": "error", "message": str(e)}), 500
-
+        logger.warning(f"Failed to notify client {client_id}: {e}")
+    
+    # Notify admin group
+    order_message = (
+        f"🌟 *New Order Up for Grabs* (ID: {order_id}) 🌟\n"
+        f"Client ID: {client_id}\n"
+        f"Platform: {order['platform'].capitalize()}\n"
+        f"Handle/URL: {order['handle_or_url']}\n"
+        f"Follows: {order['follows']} | Likes: {order['likes']} | Comments: {order['comments']}\n"
+        f"Price: ₦{order['price']}\n"
+        f"Paystack Ref: {reference}"
+    )
+    keyboard = [
+        [InlineKeyboardButton("Approve ✅", callback_data=f"admin_approve_order_{order_id}"),
+         InlineKeyboardButton("Reject ❌", callback_data=f"admin_reject_order_{order_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    try:
+        if 'screenshot' in order and order['screenshot']:
+            await application.bot.send_photo(
+                chat_id=REVIEW_GROUP_CHAT_ID,
+                photo=order['screenshot'],
+                caption=order_message,
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        else:
+            await application.bot.send_message(
+                chat_id=REVIEW_GROUP_CHAT_ID,
+                text=order_message,
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        logger.info(f"Sent order {order_id} to review group {REVIEW_GROUP_CHAT_ID}")
+    except Exception as e:
+        logger.warning(f"Failed to notify review group {REVIEW_GROUP_CHAT_ID}: {e}")
+    
+    return jsonify({"status": "success"}), 200
+    
 # Serve success.html (Paystack callback)
 @app.route('/static/success.html')
 async def serve_success():
