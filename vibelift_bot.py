@@ -1309,51 +1309,67 @@ async def serve_success():
     if not reference or reference not in users['pending_orders']:
         logger.warning(f"Success page hit with invalid/missing reference: {request.args}")
         return Response("Oops, order’s lost in the vibe! 🚫 Check /status or retry with /client!", status=400)
+    
     order_id = reference
     order = users['pending_orders'][order_id]
     client_id = order['client_id']
-    users['clients'][client_id]['step'] = 'awaiting_approval'
-    await save_users()
-    try:
-        await application.bot.send_message(
-            chat_id=int(client_id),
-            text=f"🎉 Cha-ching! Your payment for order *{order_id}* is golden! 💰\n[Order ➡️ Payment ➡️ *Approval* ➡️ Active]\nAdmins are on it—check /status!"
-        )
-        logger.info(f"Fallback: Notified client {client_id} from success page")
-    except Exception as e:
-        logger.warning(f"Fallback notification failed for {client_id}: {e}")
-    order_message = (
-        f"🌟 *New Order Up for Grabs* (ID: {order_id}) 🌟\n"
-        f"Client ID: {client_id}\n"
-        f"Platform: {order['platform'].capitalize()}\n"
-        f"Handle/URL: {order['handle_or_url']}\n"
-        f"Follows: {order['follows']} | Likes: {order['likes']} | Comments: {order['comments']}\n"
-        f"Price: ₦{order['price']}"
-    )
-    keyboard = [
-        [InlineKeyboardButton("Approve ✅", callback_data=f"admin_approve_order_{order_id}"),
-         InlineKeyboardButton("Reject ❌", callback_data=f"admin_reject_order_{order_id}")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    try:
-        if 'screenshot' in order and order['screenshot']:
-            await application.bot.send_photo(
-                chat_id=ADMIN_GROUP_ID,
-                photo=order['screenshot'],
-                caption=order_message,
-                reply_markup=reply_markup,
-                parse_mode='Markdown'
-            )
-        else:
+
+    # Check if already processed
+    if 'processed' in order and order['processed']:
+        logger.info(f"Order {order_id} already processed, serving success page only")
+    else:
+        # Move order to active_orders and mark as processed
+        order['processed'] = True
+        users['active_orders'][order_id] = order
+        del users['pending_orders'][order_id]
+        users['clients'][client_id]['step'] = 'awaiting_approval'
+        await save_users()
+
+        # Notify client
+        try:
             await application.bot.send_message(
-                chat_id=ADMIN_GROUP_ID,
-                text=order_message,
-                reply_markup=reply_markup,
-                parse_mode='Markdown'
+                chat_id=int(client_id),
+                text=f"🎉 Cha-ching! Your payment for order *{order_id}* is golden! 💰\n[Order ➡️ Payment ➡️ *Approval* ➡️ Active]\nAdmins are on it—check /status!"
             )
-        logger.info(f"Fallback: Sent order {order_id} to review group {ADMIN_GROUP_ID}")
-    except Exception as e:
-        logger.warning(f"Failed to notify review group {ADMIN_GROUP_ID}: {e}")
+            logger.info(f"Fallback: Notified client {client_id} from success page")
+        except Exception as e:
+            logger.warning(f"Fallback notification failed for {client_id}: {e}")
+
+        # Notify admin group
+        order_message = (
+            f"🌟 *New Order Up for Grabs* (ID: {order_id}) 🌟\n"
+            f"Client ID: {client_id}\n"
+            f"Platform: {order['platform'].capitalize()}\n"
+            f"Handle/URL: {order['handle_or_url']}\n"
+            f"Follows: {order['follows']} | Likes: {order['likes']} | Comments: {order['comments']}\n"
+            f"Price: ₦{order['price']}"
+        )
+        keyboard = [
+            [InlineKeyboardButton("Approve ✅", callback_data=f"admin_approve_order_{order_id}"),
+             InlineKeyboardButton("Reject ❌", callback_data=f"admin_reject_order_{order_id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        try:
+            if 'screenshot' in order and order['screenshot']:
+                await application.bot.send_photo(
+                    chat_id=ADMIN_GROUP_ID,
+                    photo=order['screenshot'],
+                    caption=order_message,
+                    reply_markup=reply_markup,
+                    parse_mode='Markdown'
+                )
+            else:
+                await application.bot.send_message(
+                    chat_id=ADMIN_GROUP_ID,
+                    text=order_message,
+                    reply_markup=reply_markup,
+                    parse_mode='Markdown'
+                )
+            logger.info(f"Fallback: Sent order {order_id} to review group {ADMIN_GROUP_ID}")
+        except Exception as e:
+            logger.warning(f"Failed to notify review group {ADMIN_GROUP_ID}: {e}")
+
+    # Serve success page
     html_content = f"""
     <!DOCTYPE html>
     <html lang="en">
