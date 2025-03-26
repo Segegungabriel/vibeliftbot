@@ -606,6 +606,12 @@ async def paystack_webhook():
         logger.warning(f"Failed to notify review group: {e} ⚠️")
     return jsonify({"status": "success"}), 200
 
+# /paystack-webhook debug
+@app.route('/paystack-webhook', methods=['GET'])
+async def paystack_webhook_debug():
+    logger.info(f"Debug: Received GET request to /paystack-webhook with args: {request.args}")
+    return jsonify({"status": "error", "message": "Use POST for Paystack webhooks!"}), 405
+
 # Admin dashboard helper
 async def update_admin_dashboard(query: CallbackQuery) -> None:
     message = "🛠️ *Admin Command Center* 🛠️\n\n"
@@ -827,6 +833,7 @@ async def handle_task_button(query: CallbackQuery, user_id: int, user_id_str: st
         )
 
 # Handle admin button
+# Replace the entire handle_admin_button in Part 2
 async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: str, data: str) -> None:
     if user_id_str != str(ADMIN_USER_ID):
         await query.message.edit_text("Admin zone, fam! 🛡️ No entry unless you’re the boss!")
@@ -848,6 +855,7 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
     elif action == 'reject_order':
         if not users.get('pending_orders'):
             await query.message.edit_text("Nada to nix here! ✅ Queue’s empty!")
+            logger.info("No pending orders to reject")
             return
         keyboard = [
             [InlineKeyboardButton(f"Order {order_id}", callback_data=f'admin_reject_order_{order_id}')]
@@ -855,9 +863,11 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.edit_text("Which order’s getting the boot? 🚫", reply_markup=reply_markup)
+        logger.info("Sent order rejection options")
     elif action == 'approve_task':
         if not users.get('pending_task_completions'):
             await query.message.edit_text("No tasks waiting, boss! ✅ All done!")
+            logger.info("No pending tasks to approve")
             return
         keyboard = [
             [InlineKeyboardButton(f"Task {completion_id}", callback_data=f'admin_approve_task_{completion_id}')]
@@ -865,9 +875,11 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.edit_text("Which task gets the thumbs-up? 👍", reply_markup=reply_markup)
+        logger.info("Sent task approval options")
     elif action == 'reject_task':
         if not users.get('pending_task_completions'):
             await query.message.edit_text("No tasks to toss! ✅ All clear!")
+            logger.info("No pending tasks to reject")
             return
         keyboard = [
             [InlineKeyboardButton(f"Task {completion_id}", callback_data=f'admin_reject_task_{completion_id}')]
@@ -875,10 +887,12 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.edit_text("Which task’s outta here? 🚫", reply_markup=reply_markup)
+        logger.info("Sent task rejection options")
     elif action == 'approve_payout':
         pending_payouts = {k: v for k, v in users['engagers'].items() if v.get('awaiting_payout')}
         if not pending_payouts:
             await query.message.edit_text("No payouts to bless! ✅ Cash flow’s chill!")
+            logger.info("No pending payouts to approve")
             return
         keyboard = [
             [InlineKeyboardButton(f"User {uid}: ₦{v['earnings'] + v['signup_bonus']}", callback_data=f'approve_payout_{uid}')]
@@ -886,10 +900,12 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.edit_text("Who’s getting paid today? 💸", reply_markup=reply_markup)
+        logger.info("Sent payout approval options")
     elif action == 'reject_payout':
         pending_payouts = {k: v for k, v in users['engagers'].items() if v.get('awaiting_payout')}
         if not pending_payouts:
             await query.message.edit_text("No payouts to deny! ✅ All good!")
+            logger.info("No pending payouts to reject")
             return
         keyboard = [
             [InlineKeyboardButton(f"User {uid}: ₦{v['earnings'] + v['signup_bonus']}", callback_data=f'reject_payout_{uid}')]
@@ -897,9 +913,11 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.edit_text("Who’s payout’s getting the axe? 🚫", reply_markup=reply_markup)
+        logger.info("Sent payout rejection options")
     elif action == 'set_priority':
         if not users.get('active_orders'):
             await query.message.edit_text("No orders to juice up! ✅ All quiet!")
+            logger.info("No active orders to prioritize")
             return
         keyboard = [
             [InlineKeyboardButton(f"Order {order_id}", callback_data=f'priority_{order_id}')]
@@ -907,9 +925,11 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.edit_text("Which order’s jumping the line? ⏫", reply_markup=reply_markup)
+        logger.info("Sent priority options")
     elif action == 'cancel_order':
         if not users.get('active_orders'):
             await query.message.edit_text("No orders to zap! ✅ All chill!")
+            logger.info("No active orders to cancel")
             return
         keyboard = [
             [InlineKeyboardButton(f"Order {order_id}", callback_data=f'cancel_order_{order_id}')]
@@ -917,6 +937,7 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.edit_text("Which order’s biting the dust? 🚫", reply_markup=reply_markup)
+        logger.info("Sent cancel order options")
     elif action == 'generate_code':
         code = generate_admin_code()
         users['pending_admin_actions'][code] = {'type': 'admin_code', 'used': False}
@@ -925,8 +946,9 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
             f"🎟️ Fresh admin code: *{code}*\n"
             "Perfect for bonuses or VIP tricks—use it wisely!"
         )
+        logger.info(f"Generated admin code: {code}")
         await update_admin_dashboard(query)
-        elif data.startswith('admin_approve_order_'):
+    elif data.startswith('admin_approve_order_'):
         order_id = data.split('_', 3)[3]
         if order_id in users['pending_orders']:
             order = users['pending_orders'].pop(order_id)
@@ -958,16 +980,19 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
                 del users['clients'][str(client_id)]
             await save_users()
             await query.message.edit_text(f"Order *{order_id}* axed! 🚫 Tough call, boss!")
+            logger.info(f"Rejected order {order_id}")
             try:
                 await application.bot.send_message(
                     chat_id=int(client_id),
                     text=f"😕 Your order *{order_id}* got the boot—hit up support or retry with /client!"
                 )
+                logger.info(f"Notified client {client_id} of rejection")
             except Exception as e:
                 logger.warning(f"Failed to notify client {client_id}: {e} ⚠️")
             await update_admin_dashboard(query)
         else:
             await query.message.edit_text(f"Order *{order_id}* vanished! 👻 Already sorted?")
+            logger.info(f"Order {order_id} not found for rejection")
     elif data.startswith('admin_approve_task_'):
         completion_id = data.split('_', 3)[3]
         if completion_id in users['pending_task_completions']:
@@ -989,20 +1014,24 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
                                 chat_id=int(client_id),
                                 text=f"🎉 Your order *{task_id}* is fully vibed out—donezo!"
                             )
+                            logger.info(f"Notified client {client_id} of order completion")
                         except Exception as e:
                             logger.warning(f"Failed to notify client {client_id}: {e} ⚠️")
             await save_users()
             await query.message.edit_text(f"Task *{completion_id}* approved—{engager_id} scores ₦{earnings}! 💰")
+            logger.info(f"Approved task {completion_id} for {engager_id}")
             try:
                 await application.bot.send_message(
                     chat_id=int(engager_id),
                     text=f"🏆 Task *{task_id}* approved! You bagged ₦{earnings}—check /balance, rockstar!"
                 )
+                logger.info(f"Notified engager {engager_id} of task approval")
             except Exception as e:
                 logger.warning(f"Failed to notify engager {engager_id}: {e} ⚠️")
             await update_admin_dashboard(query)
         else:
             await query.message.edit_text(f"Task *{completion_id}* slipped away! 👻 Already handled?")
+            logger.info(f"Task {completion_id} not found for approval")
     elif data.startswith('admin_reject_task_'):
         completion_id = data.split('_', 3)[3]
         if completion_id in users['pending_task_completions']:
@@ -1013,22 +1042,26 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
                 users['engagers'][engager_id]['claims'].remove(task_id)
             await save_users()
             await query.message.edit_text(f"Task *{completion_id}* nixed! 🚫 Back to the drawing board!")
+            logger.info(f"Rejected task {completion_id}")
             try:
                 await application.bot.send_message(
                     chat_id=int(engager_id),
                     text=f"😬 Task *{task_id}* got rejected—chat with support for the tea!"
                 )
+                logger.info(f"Notified engager {engager_id} of task rejection")
             except Exception as e:
                 logger.warning(f"Failed to notify engager {engager_id}: {e} ⚠️")
             await update_admin_dashboard(query)
         else:
             await query.message.edit_text(f"Task *{completion_id}* ghosted! 👻 Already sorted?")
+            logger.info(f"Task {completion_id} not found for rejection")
     elif data.startswith('approve_payout_'):
         target_user_id = data.split('_', 2)[2]
         if target_user_id in users['engagers']:
             user_data = users['engagers'][target_user_id]
             if not user_data.get('awaiting_payout'):
                 await query.message.edit_text(f"No payout pending for *{target_user_id}*! 🤔 All good?")
+                logger.info(f"No payout to approve for {target_user_id}")
                 return
             amount = user_data['earnings'] + user_data['signup_bonus']
             user_data['earnings'] = 0
@@ -1036,45 +1069,54 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
             user_data['awaiting_payout'] = False
             await save_users()
             await query.message.edit_text(f"Payout of ₦{amount} for *{target_user_id}* sent—cha-ching! 💸")
+            logger.info(f"Approved payout of ₦{amount} for {target_user_id}")
             try:
                 await application.bot.send_message(
                     chat_id=int(target_user_id),
                     text=f"💰 Your ₦{amount} payout just dropped—check your bank, baller!"
                 )
+                logger.info(f"Notified {target_user_id} of payout approval")
             except Exception as e:
                 logger.warning(f"Failed to notify engager {target_user_id}: {e} ⚠️")
             await update_admin_dashboard(query)
         else:
             await query.message.edit_text(f"User *{target_user_id}* is MIA! 👻")
+            logger.info(f"User {target_user_id} not found for payout approval")
     elif data.startswith('reject_payout_'):
         target_user_id = data.split('_', 2)[2]
         if target_user_id in users['engagers']:
             user_data = users['engagers'][target_user_id]
             if not user_data.get('awaiting_payout'):
                 await query.message.edit_text(f"No payout to reject for *{target_user_id}*! 🤔 All clear?")
+                logger.info(f"No payout to reject for {target_user_id}")
                 return
             user_data['awaiting_payout'] = False
             await save_users()
             await query.message.edit_text(f"Payout for *{target_user_id}* denied! 🚫 Tough love!")
+            logger.info(f"Rejected payout for {target_user_id}")
             try:
                 await application.bot.send_message(
                     chat_id=int(target_user_id),
                     text=f"😕 Your payout got a no-go—hit up support for deets!"
                 )
+                logger.info(f"Notified {target_user_id} of payout rejection")
             except Exception as e:
                 logger.warning(f"Failed to notify engager {target_user_id}: {e} ⚠️")
             await update_admin_dashboard(query)
         else:
             await query.message.edit_text(f"User *{target_user_id}* vanished! 👻")
+            logger.info(f"User {target_user_id} not found for payout rejection")
     elif data.startswith('priority_'):
         order_id = data.split('_', 1)[1]
         if order_id in users['active_orders']:
             users['active_orders'][order_id]['priority'] = True
             await save_users()
             await query.message.edit_text(f"Order *{order_id}* bumped to the front—VIP style! ⏫")
+            logger.info(f"Set priority for order {order_id}")
             await update_admin_dashboard(query)
         else:
             await query.message.edit_text(f"Order *{order_id}* slipped through! 👻 Already gone?")
+            logger.info(f"Order {order_id} not found for priority")
     elif data.startswith('cancel_order_'):
         order_id = data.split('_', 2)[2]
         if order_id in users['active_orders']:
@@ -1082,16 +1124,19 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
             client_id = order['client_id']
             await save_users()
             await query.message.edit_text(f"Order *{order_id}* zapped—gone for good! 🚫")
+            logger.info(f"Canceled order {order_id}")
             try:
                 await application.bot.send_message(
                     chat_id=int(client_id),
                     text=f"😱 Your order *{order_id}* got canceled by the boss—reach out to support!"
                 )
+                logger.info(f"Notified client {client_id} of order cancellation")
             except Exception as e:
                 logger.warning(f"Failed to notify client {client_id}: {e} ⚠️")
             await update_admin_dashboard(query)
         else:
             await query.message.edit_text(f"Order *{order_id}* already outta here! 👻")
+            logger.info(f"Order {order_id} not found for cancellation")
 
 # Part 3
 
