@@ -1083,6 +1083,8 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
         else:
             await query.message.edit_text(f"Order *{order_id}* already outta here! 👻")
 
+# Part 3
+
 # Status command
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
@@ -1386,4 +1388,138 @@ async def webhook():
         if update is None:
             logger.error("Received invalid update from Telegram")
             return jsonify({"status": "error", "message": "Invalid update"}), 400
-        if not application.up
+        if not application.updater:
+            logger.error("Application not initialized yet")
+            return jsonify({"status": "error", "message": "Application not initialized"}), 503
+        await application.process_update(update)
+        return jsonify({"status": "success"}), 200
+    except Exception as e:
+        logger.error(f"Error processing webhook update: {str(e)}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+# Serve success.html (Paystack callback)
+@app.route('/static/success.html')
+async def serve_success():
+    order_id = request.args.get('order_id', '')
+    if not order_id or order_id not in users['pending_orders']:
+        return Response("Oops, order’s lost in the vibe! 🚫 Retry with /client!", status=400)
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Payment Successful</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; text-align: center; padding: 50px; background-color: #f4f4f4; }}
+            h1 {{ color: #28a745; }}
+            p {{ font-size: 18px; }}
+            a {{ display: inline-block; margin-top: 20px; padding: 10px 20px; background-color: #007bff; color: white; text-decoration: none; border-radius: 5px; }}
+            a:hover {{ background-color: #0056b3; }}
+        </style>
+    </head>
+    <body>
+        <h1>Payment Successful! 🎉</h1>
+        <p>Order *{order_id}* is locked and loaded—admins are on it! ✅</p>
+        <p>Back to the bot for the full scoop!</p>
+        <a href="https://t.me/{application.bot.username}?start=payment_success_{order_id}">Back to Vibeliftbot 🚀</a>
+    </body>
+    </html>
+    """
+    return Response(html_content, mimetype='text/html')
+
+# Daily tips scheduler
+async def send_daily_tips():
+    while True:
+        now = datetime.now(timezone.utc)
+        next_run = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        if now.hour >= 9:
+            next_run = next_run.replace(day=now.day + 1)
+        wait_seconds = (next_run - now).total_seconds()
+        await asyncio.sleep(wait_seconds)
+        tip = random.choice(daily_tips)
+        for user_id in set(users['clients'].keys()) | set(users['engagers'].keys()):
+            if users.get('daily_tip', {}).get(user_id, 0) != now.day:
+                try:
+                    await application.bot.send_message(
+                        chat_id=int(user_id),
+                        text=f"{tip}\nCatch you tomorrow for more vibes! 😎",
+                        parse_mode='Markdown'
+                    )
+                    if 'daily_tip' not in users:
+                        users['daily_tip'] = {}
+                    users['daily_tip'][user_id] = now.day
+                    await save_users()
+                except Exception as e:
+                    logger.warning(f"Failed to send tip to {user_id}: {e} ⚠️")
+
+# Main function
+async def main():
+    global application, users
+    users = await load_users()
+    if 'clients' not in users:
+        users['clients'] = {}
+    if 'engagers' not in users:
+        users['engagers'] = {}
+    if 'pending_orders' not in users:
+        users['pending_orders'] = {}
+    if 'active_orders' not in users:
+        users['active_orders'] = {}
+    if 'pending_task_completions' not in users:
+        users['pending_task_completions'] = {}
+    if 'pending_admin_actions' not in users:
+        users['pending_admin_actions'] = {}
+    if 'referrals' not in users:
+        users['referrals'] = {}
+    if 'daily_tip' not in users:
+        users['daily_tip'] = {}
+
+    application = Application.builder().token(BOT_TOKEN).build()
+
+    # Add handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("client", client))
+    application.add_handler(CommandHandler("engager", engager))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("pay", pay))
+    application.add_handler(CommandHandler("status", status))
+    application.add_handler(CommandHandler("tasks", tasks))
+    application.add_handler(CommandHandler("cancel", cancel))
+    application.add_handler(CommandHandler("order", order))
+    application.add_handler(CommandHandler("admin", admin))
+    application.add_handler(CommandHandler("balance", balance))
+    application.add_handler(CommandHandler("withdraw", withdraw))
+    application.add_handler(CommandHandler("refer", refer))
+    application.add_handler(CommandHandler("leaderboard", leaderboard))
+    application.add_handler(CallbackQueryHandler(button))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.PHOTO, handle_message))
+    application.add_error_handler(error_handler)
+
+    # Initialize the application
+    await application.initialize()
+    logger.info("Application initialized successfully—let’s vibe!")
+
+    # Set up webhook
+    await application.bot.set_webhook(url=WEBHOOK_URL)
+    logger.info(f"Webhook set to {WEBHOOK_URL}")
+
+    # Start daily tips scheduler
+    asyncio.create_task(send_daily_tips())
+    logger.info("Daily tips scheduler fired up! ✨")
+
+    # Wrap Flask app for ASGI
+    asgi_app = WsgiToAsgi(app)
+
+    # Run the bot and Flask app together
+    config = uvicorn.Config(
+        asgi_app,
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", 10000)),
+        log_level="info"
+    )
+    server = uvicorn.Server(config)
+    await server.serve()
+
+if __name__ == "__main__":
+    asyncio.run(main())
