@@ -831,10 +831,12 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
     if user_id_str != str(ADMIN_USER_ID):
         await query.message.edit_text("Admin zone, fam! 🛡️ No entry unless you’re the boss!")
         return
-    action = data.split('_', 2)[-1]
+    action = data.split('_', 2)[-1] if '_' in data else data
+    logger.info(f"Admin action triggered: {data}")
     if action == 'approve_order':
         if not users.get('pending_orders'):
             await query.message.edit_text("No orders in the queue, chief! ✅ All quiet!")
+            logger.info("No pending orders to approve")
             return
         keyboard = [
             [InlineKeyboardButton(f"Order {order_id}", callback_data=f'admin_approve_order_{order_id}')]
@@ -842,6 +844,7 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.edit_text("Pick an order to green-light! 🚀", reply_markup=reply_markup)
+        logger.info("Sent order approval options")
     elif action == 'reject_order':
         if not users.get('pending_orders'):
             await query.message.edit_text("Nada to nix here! ✅ Queue’s empty!")
@@ -923,7 +926,7 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
             "Perfect for bonuses or VIP tricks—use it wisely!"
         )
         await update_admin_dashboard(query)
-    elif data.startswith('admin_approve_order_'):
+        elif data.startswith('admin_approve_order_'):
         order_id = data.split('_', 3)[3]
         if order_id in users['pending_orders']:
             order = users['pending_orders'].pop(order_id)
@@ -933,16 +936,19 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
                 users['clients'][str(client_id)]['step'] = 'completed'
             await save_users()
             await query.message.edit_text(f"Order *{order_id}* is live—boom! 💥")
+            logger.info(f"Approved order {order_id}")
             try:
                 await application.bot.send_message(
                     chat_id=int(client_id),
                     text=f"🎉 Your order *{order_id}* is approved and rolling! 🚀 Check /status!"
                 )
+                logger.info(f"Notified client {client_id} of approval")
             except Exception as e:
                 logger.warning(f"Failed to notify client {client_id}: {e} ⚠️")
             await update_admin_dashboard(query)
         else:
             await query.message.edit_text(f"Order *{order_id}* ghosted us! 👻 Already handled?")
+            logger.info(f"Order {order_id} not found for approval")
     elif data.startswith('admin_reject_order_'):
         order_id = data.split('_', 3)[3]
         if order_id in users['pending_orders']:
@@ -1411,7 +1417,23 @@ async def serve_success():
             "Oops, order’s lost in the vibe! 🚫 Check /status or retry with /client!",
             status=400
         )
-    order_id = reference  # Paystack’s reference matches our order_id
+    order_id = reference
+    order = users['pending_orders'][order_id]
+    client_id = order['client_id']
+    # Fallback notification (temporary until webhook is confirmed)
+    try:
+        await application.bot.send_message(
+            chat_id=int(client_id),
+            text=(
+                f"🎉 Cha-ching! Your payment for order *{order_id}* is golden! 💰\n"
+                "[Order ➡️ Payment ➡️ *Approval* ➡️ Active]\n"
+                "Admins are on it—check /status for updates!"
+            ),
+            parse_mode='Markdown'
+        )
+        logger.info(f"Fallback: Notified client {client_id} from success page")
+    except Exception as e:
+        logger.warning(f"Fallback notification failed for {client_id}: {e} ⚠️")
     html_content = f"""
     <!DOCTYPE html>
     <html lang="en">
