@@ -6,3 +6,5 @@ pymongo<4.7,>=4.5
 uvicorn==0.29.0
 python-dotenv==1.0.1
 asgiref==3.8.1  # Add this for WSGI-to-ASGI conversion
+aiohttp==3.9.3
+
