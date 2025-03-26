@@ -1,13 +1,13 @@
+# Part 1: Imports, Globals, and Core Commands for vibelift_bot.py
+
 import os
 import time
 import random
 import uuid
 import logging
 import json
-import asyncio
-from typing import Dict, Any
 from datetime import datetime, timezone
-import aiohttp  # Added for Paystack API calls
+import aiohttp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove, CallbackQuery
 from telegram.ext import (
     Application,
@@ -20,12 +20,13 @@ from telegram.ext import (
 from flask import Flask, request, jsonify, Response
 from asgiref.wsgi import WsgiToAsgi
 import uvicorn
+import asyncio
 
 # Constants
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = "https://vibeliftbot.onrender.com/webhook"
-ADMIN_USER_ID = "1518439839"  # Replace with your admin user ID
-ADMIN_GROUP_ID = os.getenv("ADMIN_GROUP_ID")  # Replace with your group chat ID
+ADMIN_USER_ID = "1518439839"
+ADMIN_GROUP_ID = os.getenv("ADMIN_GROUP_ID", "-4762253610")  # Default from logs if not set
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
 ADMINS = [ADMIN_USER_ID]
 
@@ -38,9 +39,9 @@ logger = logging.getLogger(__name__)
 # Global variables
 app = Flask(__name__)
 application = None
-users: Dict[str, Any] = {}
+users: dict = {}
 
-# Rate limiting (relaxed for testing)
+# Rate limiting
 RATE_LIMITS = {
     'start': {'limit': 5, 'window': 60},
     'client': {'limit': 5, 'window': 60, 'is_signup_action': True},
@@ -50,7 +51,7 @@ RATE_LIMITS = {
 }
 user_rate_limits = {}
 
-# Package limits with updated pricing
+# Package limits
 package_limits = {
     'bundle': {
         'instagram': {
@@ -70,7 +71,7 @@ package_limits = {
             'pro': {'follows': 75, 'likes': 150, 'comments': 50, 'price': 18000}
         }
     },
-    'custom_rates': {  # Per-unit rates for custom orders
+    'custom_rates': {
         'instagram': 50,
         'tiktok': 45,
         'facebook': 35,
@@ -78,13 +79,11 @@ package_limits = {
     }
 }
 
-# Custom follow prices per handle
 custom_follow_prices = {
-    '@myhandle': 60,  # ₦60 per follow for @myhandle
-    'https://instagram.com/username': 50,  # ₦50 per follow for this URL
+    '@myhandle': 60,
+    'https://instagram.com/username': 50,
 }
 
-# Daily tips
 daily_tips = [
     "✨ Boost your vibe: Post at 6-9 PM for max likes! ⏰",
     "🤓 Pro tip: Use trending hashtags to skyrocket your reach!",
@@ -94,7 +93,7 @@ daily_tips = [
 ]
 
 # Helper functions
-async def load_users() -> Dict[str, Any]:
+async def load_users() -> dict:
     try:
         with open('users.json', 'r') as f:
             return json.load(f)
@@ -123,14 +122,12 @@ def generate_admin_code() -> str:
 def generate_referral_code(user_id: str) -> str:
     return f"VIBE{user_id}"
 
-# Witty reply variations
 witty_rate_limit = [
     "Whoa, speed demon! Chill for a sec! ⏳",
     "Easy, tiger! Give it a breather! 😸",
     "Too fast, hotshot! Take a chill pill! 😎"
 ]
 
-# Error handler
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error(f"Update {update} caused error {context.error}")
     if update and (update.message or update.callback_query):
@@ -143,7 +140,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except Exception as e:
             logger.warning(f"Failed to send error message: {e}")
 
-# Start command with referral support
+# Core Commands
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     logger.info(f"Received /start command from user {user_id}")
@@ -157,7 +154,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text(reply)
         return
 
-    # Check for referral code
     referral_code = context.args[0] if context.args else None
     if referral_code and referral_code.startswith("VIBE"):
         referrer_id = referral_code[4:]
@@ -188,9 +184,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await query.message.edit_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
     else:
         await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
-    logger.info(f"Sent /start response to user {user_id}")
 
-# Client command
 async def client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     logger.info(f"Received /client command from user {user_id}")
@@ -220,26 +214,12 @@ async def client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 "[*Order* ➡️ Payment ➡️ Approval ➡️ Active]\n"
                 "Hit /pay to seal the deal or /cancel to bail."
             )
-            if update.callback_query:
-                query = update.callback_query
-                await query.answer()
-                await query.message.edit_text(message_text, parse_mode='Markdown')
-            else:
-                await update.message.reply_text(message_text, parse_mode='Markdown')
-            return
         elif client_data['step'] == 'awaiting_approval':
             message_text = (
                 "Your order’s in the VIP line for admin approval! ⏳\n"
                 "[Order ➡️ Payment ➡️ *Approval* ➡️ Active]\n"
                 "Hang tight—check /status for updates!"
             )
-            if update.callback_query:
-                query = update.callback_query
-                await query.answer()
-                await query.message.edit_text(message_text, parse_mode='Markdown')
-            else:
-                await update.message.reply_text(message_text, parse_mode='Markdown')
-            return
         elif client_data['step'] == 'awaiting_order':
             platform = client_data['platform']
             bundles = "\n".join(
@@ -257,13 +237,13 @@ async def client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 "4. *Custom + Pic* ➡️ `username, 20 follows, 30 likes, 20 comments` + 📸\n"
                 "Custom limits: 10-500. Pics optional for 1 & 2."
             )
-            if update.callback_query:
-                query = update.callback_query
-                await query.answer()
-                await query.message.edit_text(message_text, parse_mode='Markdown')
-            else:
-                await update.message.reply_text(message_text, parse_mode='Markdown')
-            return
+        if update.callback_query:
+            query = update.callback_query
+            await query.answer()
+            await query.message.edit_text(message_text, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(message_text, parse_mode='Markdown')
+        return
     users['clients'][user_id] = {'step': 'select_platform'}
     await save_users()
     keyboard = [
@@ -280,9 +260,7 @@ async def client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await query.message.edit_text(message_text, reply_markup=reply_markup)
     else:
         await update.message.reply_text(message_text, reply_markup=reply_markup)
-    logger.info(f"Sent platform selection to user {user_id}")
 
-# Engager command
 async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     logger.info(f"Received /engager command from user {user_id}")
@@ -325,12 +303,12 @@ async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         'daily_tasks': {'count': 0, 'last_reset': time.time()},
         'claims': [],
         'awaiting_payout': False,
-        'level': 1,  # Gamification: Start at level 1
-        'xp': 0      # Experience points for tasks
+        'level': 1,
+        'xp': 0
     }
     referral_bonus = users['referrals'].get(user_id, {}).get('referred_by')
     if referral_bonus:
-        users['engagers'][user_id]['signup_bonus'] += 300  # Bonus for referred engagers
+        users['engagers'][user_id]['signup_bonus'] += 300
     keyboard = [
         [InlineKeyboardButton("See Tasks", callback_data='tasks')],
         [InlineKeyboardButton("Check Balance", callback_data='balance')]
@@ -348,9 +326,7 @@ async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         await update.message.reply_text(message_text, reply_markup=reply_markup)
     await save_users()
-    logger.info(f"User {user_id} joined as engager")
 
-# Help command
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     logger.info(f"Received /help command from user {user_id}")
@@ -380,63 +356,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await query.message.edit_text(message_text, reply_markup=reply_markup)
     else:
         await update.message.reply_text(message_text, reply_markup=reply_markup)
-    logger.info(f"Help sent to user {user_id}")
 
-# Referral command
-async def refer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.effective_user.id)
-    logger.info(f"Received /refer command from user {user_id}")
-    referral_code = users['referrals'].get(user_id, {}).get('code', generate_referral_code(user_id))
-    if user_id not in users['referrals']:
-        users['referrals'][user_id] = {'code': referral_code, 'referred': [], 'earnings': 0}
-        await save_users()
-    referred_count = len(users['referrals'][user_id]['referred'])
-    earnings = users['referrals'][user_id]['earnings']
-    message_text = (
-        f"Spread the vibe and stack cash! 🎁\n"
-        f"Your code: *{referral_code}*\n"
-        f"Share: 'Join with /start {referral_code} for a bonus!'\n"
-        f"Friends joined: {referred_count} | Earnings: ₦{earnings}\n"
-        "Score ₦500 per pal who jumps in and gets active!"
-    )
-    await update.message.reply_text(message_text, parse_mode='Markdown')
-    logger.info(f"Referral info sent to user {user_id}")
-
-# Leaderboard command
-async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.effective_user.id)
-    logger.info(f"Received /leaderboard command from user {user_id}")
-    # Top 5 engagers by XP
-    top_engagers = sorted(
-        users['engagers'].items(),
-        key=lambda x: x[1].get('xp', 0),
-        reverse=True
-    )[:5]
-    leaderboard_text = "🏆 *Vibelift Legends* 🏆\n"
-    for i, (uid, data) in enumerate(top_engagers, 1):
-        level = data.get('level', 1)
-        xp = data.get('xp', 0)
-        leaderboard_text += f"{i}. User {uid} - Level {level} (XP: {xp}) 🌟\n"
-    your_xp = users['engagers'][user_id].get('xp', 0) if user_id in users['engagers'] else 0
-    your_level = users['engagers'][user_id].get('level', 1) if user_id in users['engagers'] else 1
-    leaderboard_text += f"\nYou: Level {your_level} (XP: {your_xp})—keep climbing! 🚀"
-    await update.message.reply_text(leaderboard_text, parse_mode='Markdown')
-    logger.info(f"Leaderboard sent to user {user_id}")
-
-# Paystack API integration
-async def initialize_paystack_transaction(payment_data: dict) -> dict:
-    url = "https://api.paystack.co/transaction/initialize"
-    headers = {
-        "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
-        "Content-Type": "application/json"
-    }
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, json=payment_data) as resp:
-            response_data = await resp.json()
-            logger.info(f"Paystack init response: {resp.status} - {json.dumps(response_data)}")
-            return response_data if resp.status == 200 else {"error": "Initialization failed", "details": response_data}
-
-# Pay command
 async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     logger.info(f"Received /pay command from user {user_id}")
@@ -449,30 +369,21 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     amount = order['price'] * 100  # Paystack uses kobo
     payment_data = {
         "amount": amount,
-        "email": f"{user_id}@vibeliftbot.com",  # Dummy email
+        "email": f"{user_id}@vibeliftbot.com",
         "reference": order_id,
-        "callback_url": f"https://vibeliftbot.onrender.com/static/success.html"
+        "callback_url": f"https://vibeliftbot.onrender.com/static/success.html",
+        "metadata": {"order_id": order_id}
     }
-    response = await initialize_paystack_transaction(payment_data)
-    if "error" in response or not response.get("data"):
-        logger.error(f"Paystack API error: {response}")
-        # If duplicate reference, generate a new order_id
-        if response.get("code") == "duplicate_reference":
-            new_order_id = str(uuid.uuid4())
-            order['reference'] = new_order_id  # Update reference
-            users['pending_orders'][new_order_id] = order
-            del users['pending_orders'][order_id]
-            client_data['order_id'] = new_order_id
-            payment_data["reference"] = new_order_id
-            response = await initialize_paystack_transaction(payment_data)
-            if "error" in response or not response.get("data"):
+    url = "https://api.paystack.co/transaction/initialize"
+    headers = {"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}", "Content-Type": "application/json"}
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, headers=headers, json=payment_data) as resp:
+            response_data = await resp.json()
+            if resp.status != 200 or not response_data.get("data"):
+                logger.error(f"Paystack API error: {response_data}")
                 await update.message.reply_text("Payment’s tripping! 😵 Try again or hit up support!")
                 return
-            order_id = new_order_id
-        else:
-            await update.message.reply_text("Payment’s tripping! 😵 Try again or hit up support!")
-            return
-    auth_url = response["data"]["authorization_url"]
+    auth_url = response_data["data"]["authorization_url"]
     await update.message.reply_text(
         f"Time to make it rain! 💸\n"
         f"Order *{order_id}*: ₦{order['price']}\n"
@@ -480,142 +391,357 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode='Markdown',
         disable_web_page_preview=True
     )
+    # Part 2: Button Handlers for vibelift_bot.py
 
-# Withdraw command
-async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = str(update.effective_user.id)
-    logger.info(f"Received /withdraw command from user {user_id}")
-    if user_id not in users['engagers']:
-        await update.message.reply_text("You’re not an engager yet, fam! 💼 Join with /engager!")
-        return
-    user_data = users['engagers'][user_id]
-    if user_data.get('awaiting_payout'):
-        await update.message.reply_text("Hold up—your payout’s already in the queue! ⏳ Chill and wait!")
-        return
-    total_earnings = user_data.get('earnings', 0) + user_data.get('signup_bonus', 0)
-    if total_earnings < 1000:
-        await update.message.reply_text("Need at least ₦1000 to cash out, hustler! 🏆 Keep grinding!")
-        return
-    user_data['awaiting_payout'] = True
-    await save_users()
-    await update.message.reply_text(
-        f"Your ₦{total_earnings} withdrawal is in the VIP line for review! 💸\n"
-        "We’ll ping you when it’s a done deal!"
-    )
-    # Notify admin in group chat
-    message = (
-        f"💰 *Payout Request Alert* 💰\n"
-        f"Engager ID: {user_id}\n"
-        f"Amount: ₦{total_earnings}"
-    )
-    keyboard = [
-        [InlineKeyboardButton("Approve ✅", callback_data=f"approve_payout_{user_id}"),
-         InlineKeyboardButton("Reject ❌", callback_data=f"reject_payout_{user_id}")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    try:
-        await application.bot.send_message(
-            chat_id=ADMIN_GROUP_ID,
-            text=message,
-            reply_markup=reply_markup,
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    user_id = str(query.from_user.id)
+    data = query.data
+    logger.info(f"Button clicked by user {user_id}: {data}")
+
+    if data == 'client':
+        await client(update, context)
+    elif data == 'engager':
+        await engager(update, context)
+    elif data == 'help':
+        await help_command(update, context)
+    elif data == 'tasks':
+        await tasks(update, context)
+    elif data == 'balance':
+        await balance(update, context)
+    elif data == 'withdraw':
+        await withdraw(update, context)
+    elif data.startswith('platform_'):
+        platform = data.split('_')[1]
+        users['clients'][user_id] = {'step': 'awaiting_order', 'platform': platform}
+        await save_users()
+        bundles = "\n".join(
+            f"- *{k.capitalize()}*: {v['follows']} follows, {v['likes']} likes, {v['comments']} comments (₦{v['price']})"
+            for k, v in package_limits['bundle'][platform].items()
+        )
+        await query.message.edit_text(
+            f"Locked in *{platform.capitalize()}*! 🚀\n"
+            "[*Order* ➡️ Payment ➡️ Approval ➡️ Active]\n"
+            f"Pick your vibe:\n{bundles}\n"
+            "*How to order:*\n"
+            "1. *Handle + Bundle* ➡️ `@myhandle starter`\n"
+            "2. *URL + Bundle* ➡️ `https://instagram.com/username pro`\n"
+            "3. *Package + Pic* ➡️ `package starter` + 📸\n"
+            "4. *Custom + Pic* ➡️ `username, 20 follows, 30 likes, 20 comments` + 📸\n"
+            "Custom limits: 10-500. Pics optional for 1 & 2.",
             parse_mode='Markdown'
         )
-    except Exception as e:
-        logger.warning(f"Failed to notify review group: {e}")
+    elif data.startswith('task_'):
+        await handle_task_button(query, int(user_id), user_id, data)
+    elif data.startswith('help_'):
+        await handle_help_button(query, data)
+    elif data.startswith('cancel_'):
+        await handle_cancel_button(query, user_id, data)
+    elif data.startswith('admin_') or data.startswith('approve_payout_') or data.startswith('reject_payout_') or data.startswith('priority_') or data.startswith('cancel_order_'):
+        await handle_admin_button(query, int(user_id), user_id, data)
 
-# Paystack verification
-async def verify_paystack_transaction(reference: str) -> Dict[str, Any]:
-    url = f"https://api.paystack.co/transaction/verify/{reference}"
-    headers = {
-        "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
-        "Content-Type": "application/json"
-    }
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers) as response:
-            logger.info(f"Paystack verify response: {response.status} - {await response.text()}")
-            if response.status != 200:
-                logger.error(f"Paystack verification error: {await response.text()}")
-                return {"error": "Failed to verify transaction"}
-            return await response.json()
-
-# Paystack webhook endpoint
-@app.route('/paystack-webhook', methods=['POST'])
-async def paystack_webhook():
-    payload = request.get_json()
-    logger.info(f"Paystack webhook received with payload: {json.dumps(payload, indent=2)}")
-    if not payload or payload.get('event') != 'charge.success':
-        logger.info(f"Ignoring webhook event: {payload.get('event', 'no event')}")
-        return jsonify({"status": "ignored"}), 200
-    reference = payload['data']['reference']
-    logger.info(f"Processing webhook for reference: {reference}")
-    verification = await verify_paystack_transaction(reference)
-    if "error" in verification or not verification.get("status") or verification["data"]["status"] != "success":
-        logger.error(f"Payment verification failed for {reference}: {verification}")
-        return jsonify({"status": "error"}), 400
-    order_id = reference
-    if order_id not in users['pending_orders']:
-        logger.warning(f"Order {order_id} not found in pending_orders")
-        return jsonify({"status": "order_not_found"}), 404
-    order = users['pending_orders'][order_id]
-    client_id = order['client_id']
-    users['clients'][client_id]['step'] = 'awaiting_approval'
-    await save_users()
-    # Notify client
-    try:
-        await application.bot.send_message(
-            chat_id=int(client_id),
-            text=(
-                f"🎉 Cha-ching! Your payment for order *{order_id}* is golden! 💰\n"
-                "[Order ➡️ Payment ➡️ *Approval* ➡️ Active]\n"
-                "Admins are on it—check /status for updates!"
-            ),
+async def handle_help_button(query: CallbackQuery, data: str) -> None:
+    action = data.split('_')[1]
+    if action == 'order':
+        await query.message.edit_text(
+            "🌟 *How to Order Like a Pro* 🌟\n"
+            "1. Hit /client and pick a platform 🎯\n"
+            "2. Send your order (e.g., `@myhandle starter`) ➡️\n"
+            "3. Pay up with /pay 💰\n"
+            "4. Wait for admin magic—track it with /status! ✨",
             parse_mode='Markdown'
         )
-        logger.info(f"Notified client {client_id} of payment success")
-    except Exception as e:
-        logger.warning(f"Failed to notify client {client_id}: {e} ⚠️")
-    # Send to review group (unchanged, just for context)
-    order_message = (
-        f"🌟 *New Order Up for Grabs* (ID: {order_id}) 🌟\n"
-        f"Client ID: {client_id}\n"
-        f"Platform: {order['platform'].capitalize()}\n"
-        f"Handle/URL: {order['handle_or_url']}\n"
-        f"Follows: {order['follows']} | Likes: {order['likes']} | Comments: {order['comments']}\n"
-        f"Price: ₦{order['price']}"
-    )
-    keyboard = [
-        [InlineKeyboardButton("Approve ✅", callback_data=f"admin_approve_order_{order_id}"),
-         InlineKeyboardButton("Reject ❌", callback_data=f"admin_reject_order_{order_id}")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    try:
-        if 'screenshot' in order and order['screenshot']:
-            await application.bot.send_photo(
-                chat_id=ADMIN_GROUP_ID,
-                photo=order['screenshot'],
-                caption=order_message,
-                reply_markup=reply_markup,
-                parse_mode='Markdown'
-            )
+    elif action == 'earn':
+        await query.message.edit_text(
+            "💼 *How to Stack Cash* 💼\n"
+            "1. Join with /engager 🏆\n"
+            "2. Grab tasks with /tasks ⏰\n"
+            "3. Claim a task & send a screenshot (no text!) 📸\n"
+            "4. Earn ₦20 + 10 XP per task ✅\n"
+            "5. Cash out with /withdraw at ₦1000! 💸",
+            parse_mode='Markdown'
+        )
+    elif action == 'status':
+        await query.message.edit_text(
+            "🔍 *Check Your Vibe* 🔍\n"
+            "Just type /status to see where your order’s at! 🚀\n"
+            "From payment to active—it’s all there!",
+            parse_mode='Markdown'
+        )
+    elif action == 'support':
+        await query.message.edit_text(
+            "🆘 *Need a Hero?* 🆘\n"
+            "Drop a line to [Your Support Link] and we’ll swoop in! 😎",
+            parse_mode='Markdown'
+        )
+
+async def handle_cancel_button(query: CallbackQuery, user_id: str, data: str) -> None:
+    action = data.split('_')[1]
+    if action == 'yes':
+        if user_id in users['clients']:
+            client_data = users['clients'][user_id]
+            if client_data['step'] in ['awaiting_payment', 'awaiting_approval']:
+                order_id = client_data.get('order_id')
+                if order_id and order_id in users['pending_orders']:
+                    del users['pending_orders'][order_id]
+                del users['clients'][user_id]
+                await save_users()
+                await query.message.edit_text("Order wiped out! 🚫 Start fresh with /client!")
+            else:
+                await query.message.edit_text("Nothing to ditch here! 😏 Kick off with /client!")
+        elif user_id in users['engagers']:
+            del users['engagers'][user_id]
+            await save_users()
+            await query.message.edit_text("You’re out of the engager club! 🎬 Rejoin with /engager!")
         else:
-            await application.bot.send_message(
-                chat_id=ADMIN_GROUP_ID,
-                text=order_message,
-                reply_markup=reply_markup,
-                parse_mode='Markdown'
+            await query.message.edit_text("Nothing to cancel, fam! 🌟 Pick a role with /start!")
+    elif action == 'no':
+        await query.message.edit_text("Phew, crisis averted! 😅 Back to business—try /client or /engager!")
+
+async def handle_task_button(query: CallbackQuery, user_id: int, user_id_str: str, data: str) -> None:
+    action = data.split('_')[1]
+    task_id = data.split('_')[-1]
+    if action == 'claim':
+        if task_id not in users['active_orders']:
+            await query.message.edit_text("Task’s gone poof! 🚫 Check /tasks for fresh ones!")
+            return
+        if task_id in users['engagers'][user_id_str].get('claims', []):
+            await query.message.edit_text("You’ve already nabbed this one, sneaky! 😏")
+            return
+        order = users['active_orders'][task_id]
+        platform = order['platform']
+        users['engagers'][user_id_str]['claims'].append(task_id)
+        users['engagers'][user_id_str]['current_task'] = task_id
+        await save_users()
+        task_message = (
+            f"Task *{task_id}* claimed! 🚀\n"
+            f"Platform: {platform.capitalize()}\n"
+            f"Handle/URL: {order['handle_or_url']}\n"
+            f"Do: {order['follows']} follows, {order['likes']} likes, {order['comments']} comments\n"
+            "Send a screenshot of your work (e.g., comment)—no text needed! 📸"
+        )
+        await query.message.edit_text(task_message, parse_mode='Markdown')
+
+async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: str, data: str) -> None:
+    if user_id_str not in ADMINS:
+        await query.message.edit_text("Admin zone, fam! 🛡️ No entry unless you’re the boss!")
+        return
+    action = data.split('_', 2)[-1] if '_' in data else data
+    logger.info(f"Admin action triggered: {data}")
+    try:
+        if action == 'approve_order':
+            if not users.get('pending_orders'):
+                await query.message.edit_text("No orders in the queue, chief! ✅ All quiet!")
+            else:
+                keyboard = [
+                    [InlineKeyboardButton(f"Order {order_id}", callback_data=f'admin_approve_order_{order_id}')]
+                    for order_id in users['pending_orders'].keys()
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.message.edit_text("Pick an order to green-light! 🚀", reply_markup=reply_markup)
+        elif action == 'reject_order':
+            if not users.get('pending_orders'):
+                await query.message.edit_text("Nada to nix here! ✅ Queue’s empty!")
+            else:
+                keyboard = [
+                    [InlineKeyboardButton(f"Order {order_id}", callback_data=f'admin_reject_order_{order_id}')]
+                    for order_id in users['pending_orders'].keys()
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.message.edit_text("Which order’s getting the boot? 🚫", reply_markup=reply_markup)
+        elif action == 'approve_task':
+            if not users.get('pending_task_completions'):
+                await query.message.edit_text("No tasks waiting, boss! ✅ All done!")
+            else:
+                keyboard = [
+                    [InlineKeyboardButton(f"Task {completion_id}", callback_data=f'admin_approve_task_{completion_id}')]
+                    for completion_id in users['pending_task_completions'].keys()
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.message.edit_text("Which task gets the thumbs-up? 👍", reply_markup=reply_markup)
+        elif action == 'reject_task':
+            if not users.get('pending_task_completions'):
+                await query.message.edit_text("No tasks to toss! ✅ All clear!")
+            else:
+                keyboard = [
+                    [InlineKeyboardButton(f"Task {completion_id}", callback_data=f'admin_reject_task_{completion_id}')]
+                    for completion_id in users['pending_task_completions'].keys()
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.message.edit_text("Which task’s outta here? 🚫", reply_markup=reply_markup)
+        elif action == 'approve_payout':
+            pending_payouts = {k: v for k, v in users['engagers'].items() if v.get('awaiting_payout')}
+            if not pending_payouts:
+                await query.message.edit_text("No payouts to bless! ✅ Cash flow’s chill!")
+            else:
+                keyboard = [
+                    [InlineKeyboardButton(f"User {uid}: ₦{v['earnings'] + v['signup_bonus']}", callback_data=f'approve_payout_{uid}')]
+                    for uid, v in pending_payouts.items()
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.message.edit_text("Who’s getting paid today? 💸", reply_markup=reply_markup)
+        elif action == 'reject_payout':
+            pending_payouts = {k: v for k, v in users['engagers'].items() if v.get('awaiting_payout')}
+            if not pending_payouts:
+                await query.message.edit_text("No payouts to deny! ✅ All good!")
+            else:
+                keyboard = [
+                    [InlineKeyboardButton(f"User {uid}: ₦{v['earnings'] + v['signup_bonus']}", callback_data=f'reject_payout_{uid}')]
+                    for uid, v in pending_payouts.items()
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.message.edit_text("Who’s payout’s getting the axe? 🚫", reply_markup=reply_markup)
+        elif action == 'set_priority':
+            if not users.get('active_orders'):
+                await query.message.edit_text("No orders to juice up! ✅ All quiet!")
+            else:
+                keyboard = [
+                    [InlineKeyboardButton(f"Order {order_id}", callback_data=f'priority_{order_id}')]
+                    for order_id in users['active_orders'].keys()
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.message.edit_text("Which order’s jumping the line? ⏫", reply_markup=reply_markup)
+        elif action == 'cancel_order':
+            if not users.get('active_orders'):
+                await query.message.edit_text("No orders to zap! ✅ All chill!")
+            else:
+                keyboard = [
+                    [InlineKeyboardButton(f"Order {order_id}", callback_data=f'cancel_order_{order_id}')]
+                    for order_id in users['active_orders'].keys()
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.message.edit_text("Which order’s biting the dust? 🚫", reply_markup=reply_markup)
+        elif action == 'generate_code':
+            code = generate_admin_code()
+            users['pending_admin_actions'][code] = {'type': 'admin_code', 'used': False}
+            await save_users()
+            await query.message.edit_text(
+                f"🎟️ Fresh admin code: *{code}*\n"
+                "Perfect for bonuses or VIP tricks—use it wisely!"
             )
-        logger.info(f"Sent order {order_id} to review group")
+            await update_admin_dashboard(query)
+        elif data.startswith('admin_approve_order_'):
+            order_id = data.split('_', 3)[3]
+            if order_id in users['pending_orders']:
+                order = users['pending_orders'].pop(order_id)
+                client_id = order['client_id']
+                users['active_orders'][order_id] = order
+                if str(client_id) in users['clients']:
+                    users['clients'][str(client_id)]['step'] = 'completed'
+                await save_users()
+                await query.message.edit_text(f"Order *{order_id}* is live—boom! 💥")
+                await application.bot.send_message(
+                    int(client_id),
+                    f"🎉 Your order *{order_id}* is approved and rolling! 🚀 Check /status!"
+                )
+                await update_admin_dashboard(query)
+        elif data.startswith('admin_reject_order_'):
+            order_id = data.split('_', 3)[3]
+            if order_id in users['pending_orders']:
+                order = users['pending_orders'].pop(order_id)
+                client_id = order['client_id']
+                if str(client_id) in users['clients']:
+                    del users['clients'][str(client_id)]
+                await save_users()
+                await query.message.edit_text(f"Order *{order_id}* axed! 🚫 Tough call, boss!")
+                await application.bot.send_message(
+                    int(client_id),
+                    f"😕 Your order *{order_id}* got the boot—hit up support or retry with /client!"
+                )
+                await update_admin_dashboard(query)
+        elif data.startswith('admin_approve_task_'):
+            completion_id = data.split('_', 3)[3]
+            if completion_id in users['pending_task_completions']:
+                completion = users['pending_task_completions'].pop(completion_id)
+                engager_id = completion['engager_id']
+                task_id = completion['task_id']
+                earnings = 20
+                users['engagers'][engager_id]['earnings'] = users['engagers'][engager_id].get('earnings', 0) + earnings
+                users['engagers'][engager_id]['xp'] = users['engagers'][engager_id].get('xp', 0) + 10
+                if task_id in users['active_orders']:
+                    order = users['active_orders'][task_id]
+                    for metric in ['follows', 'likes', 'comments']:
+                        if order.get(metric, 0) > 0:
+                            order[metric] -= 1
+                    if all(order.get(metric, 0) == 0 for metric in ['follows', 'likes', 'comments']):
+                        users['active_orders'].pop(task_id)
+                        client_id = order['client_id']
+                        await application.bot.send_message(
+                            chat_id=int(client_id),
+                            text=f"🎉 Your order *{task_id}* is fully vibed out—donezo!"
+                        )
+                await save_users()
+                await query.message.edit_text(f"Task *{completion_id}* approved—{engager_id} scores ₦{earnings}! 💰")
+                await application.bot.send_message(
+                    chat_id=int(engager_id),
+                    text=f"🏆 Task *{task_id}* approved! You bagged ₦{earnings} + 10 XP—check /balance!"
+                )
+                await update_admin_dashboard(query)
+        elif data.startswith('admin_reject_task_'):
+            completion_id = data.split('_', 3)[3]
+            if completion_id in users['pending_task_completions']:
+                completion = users['pending_task_completions'].pop(completion_id)
+                engager_id = completion['engager_id']
+                task_id = completion['task_id']
+                if task_id in users['engagers'][engager_id].get('claims', []):
+                    users['engagers'][engager_id]['claims'].remove(task_id)
+                await save_users()
+                await query.message.edit_text(f"Task *{completion_id}* nixed! 🚫 Back to the drawing board!")
+                await application.bot.send_message(
+                    chat_id=int(engager_id),
+                    text=f"😬 Task *{task_id}* got rejected—chat with support for the tea!"
+                )
+                await update_admin_dashboard(query)
+        elif data.startswith('approve_payout_'):
+            target_user_id = data.split('_', 2)[2]
+            if target_user_id in users['engagers'] and users['engagers'][target_user_id].get('awaiting_payout'):
+                user_data = users['engagers'][target_user_id]
+                amount = user_data['earnings'] + user_data['signup_bonus']
+                user_data['earnings'] = 0
+                user_data['signup_bonus'] = 0
+                user_data['awaiting_payout'] = False
+                await save_users()
+                await query.message.edit_text(f"Payout of ₦{amount} for *{target_user_id}* sent—cha-ching! 💸")
+                await application.bot.send_message(
+                    chat_id=int(target_user_id),
+                    text=f"💰 Your ₦{amount} payout just dropped—check your bank, baller!"
+                )
+                await update_admin_dashboard(query)
+        elif data.startswith('reject_payout_'):
+            target_user_id = data.split('_', 2)[2]
+            if target_user_id in users['engagers'] and users['engagers'][target_user_id].get('awaiting_payout'):
+                users['engagers'][target_user_id]['awaiting_payout'] = False
+                await save_users()
+                await query.message.edit_text(f"Payout for *{target_user_id}* denied! 🚫 Tough love!")
+                await application.bot.send_message(
+                    chat_id=int(target_user_id),
+                    text=f"😕 Your payout got a no-go—hit up support for deets!"
+                )
+                await update_admin_dashboard(query)
+        elif data.startswith('priority_'):
+            order_id = data.split('_', 1)[1]
+            if order_id in users['active_orders']:
+                users['active_orders'][order_id]['priority'] = True
+                await save_users()
+                await query.message.edit_text(f"Order *{order_id}* bumped to the front—VIP style! ⏫")
+                await update_admin_dashboard(query)
+        elif data.startswith('cancel_order_'):
+            order_id = data.split('_', 2)[2]
+            if order_id in users['active_orders']:
+                order = users['active_orders'].pop(order_id)
+                client_id = order['client_id']
+                await save_users()
+                await query.message.edit_text(f"Order *{order_id}* zapped—gone for good! 🚫")
+                await application.bot.send_message(
+                    chat_id=int(client_id),
+                    text=f"😱 Your order *{order_id}* got canceled by the boss—reach out to support!"
+                )
+                await update_admin_dashboard(query)
     except Exception as e:
-        logger.warning(f"Failed to notify review group: {e} ⚠️")
-    return jsonify({"status": "success"}), 200
+        logger.error(f"Admin button error: {e}")
+        await application.bot.send_message(chat_id=user_id, text=f"Button’s acting up! 😵 Error: {str(e)}")
 
-# /paystack-webhook debug
-@app.route('/paystack-webhook', methods=['GET'])
-async def paystack_webhook_debug():
-    logger.info(f"Debug: Received GET request to /paystack-webhook with args: {request.args}")
-    return jsonify({"status": "error", "message": "Use POST for Paystack webhooks!"}), 405
-
-# Admin dashboard helper
 async def update_admin_dashboard(query: CallbackQuery) -> None:
     message = "🛠️ *Admin Command Center* 🛠️\n\n"
     message += "📊 *Pending Orders*:\n"
@@ -646,486 +772,9 @@ async def update_admin_dashboard(query: CallbackQuery) -> None:
         await query.message.edit_text(message, reply_markup=reply_markup, parse_mode='Markdown')
     except Exception as e:
         logger.error(f"Failed to update admin dashboard: {e}")
+# Part 3: Remaining Commands and Message Handler for vibelift_bot.py
 
-# Button handler
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()  # Acknowledge the button click
-    user_id = query.from_user.id
-    user_id_str = str(user_id)
-    data = query.data
-    logger.info(f"Button clicked by user {user_id}: {data}")
-
-    if data == 'client':
-        await client(update, context)
-    elif data == 'engager':
-        await engager(update, context)
-    elif data == 'help':
-        await help_command(update, context)
-    elif data == 'tasks':
-        await tasks(update, context)
-    elif data == 'balance':
-        await balance(update, context)
-    elif data == 'withdraw':
-        await withdraw(update, context)
-    elif data.startswith('platform_'):
-        platform = data.split('_')[1]
-        users['clients'][user_id_str] = {
-            'step': 'awaiting_order',
-            'platform': platform
-        }
-        await save_users()
-        bundles = "\n".join(
-            f"- *{k.capitalize()}*: {v['follows']} follows, {v['likes']} likes, {v['comments']} comments (₦{v['price']})"
-            for k, v in package_limits['bundle'][platform].items()
-        )
-        await query.message.edit_text(
-            f"Locked in *{platform.capitalize()}*! 🚀\n"
-            "[*Order* ➡️ Payment ➡️ Approval ➡️ Active]\n"
-            f"Pick your vibe:\n{bundles}\n"
-            "*How to order:*\n"
-            "1. *Handle + Bundle* ➡️ `@myhandle starter`\n"
-            "2. *URL + Bundle* ➡️ `https://instagram.com/username pro`\n"
-            "3. *Package + Pic* ➡️ `package starter` + 📸\n"
-            "4. *Custom + Pic* ➡️ `username, 20 follows, 30 likes, 20 comments` + 📸\n"
-            "Custom limits: 10-500. Pics optional for 1 & 2.",
-            parse_mode='Markdown'
-        )
-    elif data.startswith('task_'):
-        await handle_task_button(query, user_id, user_id_str, data)
-    elif data.startswith('help_'):
-        await handle_help_button(query, data)
-    elif data.startswith('cancel_'):
-        await handle_cancel_button(query, user_id_str, data)
-    elif data.startswith('admin_') or data.startswith('approve_payout_') or data.startswith('reject_payout_') or data.startswith('priority_') or data.startswith('cancel_order_'):
-        await handle_admin_button(query, user_id, user_id_str, data)
-
-# Handle help button
-async def handle_help_button(query: CallbackQuery, data: str) -> None:
-    action = data.split('_')[1]
-    if action == 'order':
-        await query.message.edit_text(
-            "🌟 *How to Order Like a Pro* 🌟\n"
-            "1. Hit /client and pick a platform 🎯\n"
-            "2. Send your order (e.g., `@myhandle starter`) ➡️\n"
-            "3. Pay up with /pay 💰\n"
-            "4. Wait for admin magic—track it with /status! ✨",
-            parse_mode='Markdown'
-        )
-    elif action == 'earn':
-        await query.message.edit_text(
-            "💼 *How to Stack Cash* 💼\n"
-            "1. Join with /engager 🏆\n"
-            "2. Grab tasks with /tasks ⏰\n"
-            "3. Submit proof—admins review it! ✅\n"
-            "4. Cash out with /withdraw when you hit ₦1000! 💸",
-            parse_mode='Markdown'
-        )
-    elif action == 'status':
-        await query.message.edit_text(
-            "🔍 *Check Your Vibe* 🔍\n"
-            "Just type /status to see where your order’s at! 🚀\n"
-            "From payment to active—it’s all there!",
-            parse_mode='Markdown'
-        )
-    elif action == 'support':
-        await query.message.edit_text(
-            "🆘 *Need a Hero?* 🆘\n"
-            "Drop a line to [Your Support Link] and we’ll swoop in! 😎",
-            parse_mode='Markdown'
-        )
-
-# Handle cancel button
-async def handle_cancel_button(query: CallbackQuery, user_id: str, data: str) -> None:
-    action = data.split('_')[1]
-    if action == 'yes':
-        if user_id in users['clients']:
-            client_data = users['clients'][user_id]
-            if client_data['step'] in ['awaiting_payment', 'awaiting_approval']:
-                order_id = client_data.get('order_id')
-                if order_id and order_id in users['pending_orders']:
-                    del users['pending_orders'][order_id]
-                del users['clients'][user_id]
-                await save_users()
-                await query.message.edit_text("Order wiped out! 🚫 Start fresh with /client!")
-            else:
-                await query.message.edit_text("Nothing to ditch here! 😏 Kick off with /client!")
-        elif user_id in users['engagers']:
-            del users['engagers'][user_id]
-            await save_users()
-            await query.message.edit_text("You’re out of the engager club! 🎬 Rejoin with /engager!")
-        else:
-            await query.message.edit_text("Nothing to cancel, fam! 🌟 Pick a role with /start!")
-    elif action == 'no':
-        await query.message.edit_text("Phew, crisis averted! 😅 Back to business—try /client or /engager!")
-
-# Handle task button with gamification
-async def handle_task_button(query: CallbackQuery, user_id: int, user_id_str: str, data: str) -> None:
-    action = data.split('_')[1]
-    task_id = data.split('_')[-1]
-
-    if action == 'claim':
-        if task_id not in users['active_orders']:
-            await query.message.edit_text("Task’s gone poof! 🚫 Check /tasks for fresh ones!")
-            return
-        if task_id in users['engagers'][user_id_str].get('claims', []):
-            await query.message.edit_text("You’ve already nabbed this one, sneaky! 😏")
-            return
-        order = users['active_orders'][task_id]
-        platform = order['platform']
-        task_type = random.choice(['follow', 'like', 'comment'])
-        task_earnings = 20
-        xp_gain = 10  # Gamification: Earn XP per task
-
-        completion_id = str(uuid.uuid4())
-        users['pending_task_completions'][completion_id] = {
-            'engager_id': user_id_str,
-            'task_id': task_id,
-            'task_type': task_type,
-            'earnings': task_earnings,
-            'platform': platform,
-            'timestamp': time.time()
-        }
-        users['engagers'][user_id_str]['claims'].append(task_id)
-        users['engagers'][user_id_str]['xp'] = users['engagers'][user_id_str].get('xp', 0) + xp_gain
-        level = users['engagers'][user_id_str]['level']
-        xp = users['engagers'][user_id_str]['xp']
-        if xp >= level * 50:  # Level up every 50 XP per level
-            users['engagers'][user_id_str]['level'] += 1
-            await application.bot.send_message(
-                chat_id=user_id,
-                text=f"🎉 Level Up! You’re now Level {level + 1}, legend! 🌟 Keep slaying!"
-            )
-        await save_users()
-
-        task_message = (
-            f"📋 *Task Up for Review* (ID: {completion_id}) 📋\n"
-            f"Engager ID: {user_id_str}\n"
-            f"Task ID: {task_id}\n"
-            f"Platform: {platform.capitalize()}\n"
-            f"Task: {task_type.capitalize()}\n"
-            f"Earnings: ₦{task_earnings} | XP: {xp_gain}"
-        )
-        keyboard = [
-            [InlineKeyboardButton("Approve ✅", callback_data=f"admin_approve_task_{completion_id}"),
-             InlineKeyboardButton("Reject ❌", callback_data=f"admin_reject_task_{completion_id}")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        try:
-            await application.bot.send_message(
-                chat_id=ADMIN_GROUP_ID,
-                text=task_message,
-                reply_markup=reply_markup,
-                parse_mode='Markdown'
-            )
-        except Exception as e:
-            logger.warning(f"Failed to notify review group: {e} ⚠️")
-
-        await query.message.edit_text(
-            f"Task submitted! ⏳\n"
-            "[Claimed ➡️ *Review* ➡️ Earnings]\n"
-            f"XP +{xp_gain}—check your rank with /leaderboard!"
-        )
-
-# Handle admin button
-# Replace the entire handle_admin_button in Part 2
-async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: str, data: str) -> None:
-    if user_id_str != str(ADMIN_USER_ID):
-        await query.message.edit_text("Admin zone, fam! 🛡️ No entry unless you’re the boss!")
-        return
-    action = data.split('_', 2)[-1] if '_' in data else data
-    logger.info(f"Admin action triggered: {data}")
-    try:
-        if action == 'approve_order':
-            if not users.get('pending_orders'):
-                await query.message.edit_text("No orders in the queue, chief! ✅ All quiet!")
-                logger.info("No pending orders to approve")
-            else:
-                keyboard = [
-                    [InlineKeyboardButton(f"Order {order_id}", callback_data=f'admin_approve_order_{order_id}')]
-                    for order_id in users['pending_orders'].keys()
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.message.edit_text("Pick an order to green-light! 🚀", reply_markup=reply_markup)
-                logger.info("Sent order approval options")
-        elif action == 'reject_order':
-            if not users.get('pending_orders'):
-                await query.message.edit_text("Nada to nix here! ✅ Queue’s empty!")
-                logger.info("No pending orders to reject")
-            else:
-                keyboard = [
-                    [InlineKeyboardButton(f"Order {order_id}", callback_data=f'admin_reject_order_{order_id}')]
-                    for order_id in users['pending_orders'].keys()
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.message.edit_text("Which order’s getting the boot? 🚫", reply_markup=reply_markup)
-                logger.info("Sent order rejection options")
-        elif action == 'approve_task':
-            if not users.get('pending_task_completions'):
-                await query.message.edit_text("No tasks waiting, boss! ✅ All done!")
-                logger.info("No pending tasks to approve")
-            else:
-                keyboard = [
-                    [InlineKeyboardButton(f"Task {completion_id}", callback_data=f'admin_approve_task_{completion_id}')]
-                    for completion_id in users['pending_task_completions'].keys()
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.message.edit_text("Which task gets the thumbs-up? 👍", reply_markup=reply_markup)
-                logger.info("Sent task approval options")
-        elif action == 'reject_task':
-            if not users.get('pending_task_completions'):
-                await query.message.edit_text("No tasks to toss! ✅ All clear!")
-                logger.info("No pending tasks to reject")
-            else:
-                keyboard = [
-                    [InlineKeyboardButton(f"Task {completion_id}", callback_data=f'admin_reject_task_{completion_id}')]
-                    for completion_id in users['pending_task_completions'].keys()
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.message.edit_text("Which task’s outta here? 🚫", reply_markup=reply_markup)
-                logger.info("Sent task rejection options")
-        elif action == 'approve_payout':
-            pending_payouts = {k: v for k, v in users['engagers'].items() if v.get('awaiting_payout')}
-            if not pending_payouts:
-                await query.message.edit_text("No payouts to bless! ✅ Cash flow’s chill!")
-                logger.info("No pending payouts to approve")
-            else:
-                keyboard = [
-                    [InlineKeyboardButton(f"User {uid}: ₦{v['earnings'] + v['signup_bonus']}", callback_data=f'approve_payout_{uid}')]
-                    for uid, v in pending_payouts.items()
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.message.edit_text("Who’s getting paid today? 💸", reply_markup=reply_markup)
-                logger.info("Sent payout approval options")
-        elif action == 'reject_payout':
-            pending_payouts = {k: v for k, v in users['engagers'].items() if v.get('awaiting_payout')}
-            if not pending_payouts:
-                await query.message.edit_text("No payouts to deny! ✅ All good!")
-                logger.info("No pending payouts to reject")
-            else:
-                keyboard = [
-                    [InlineKeyboardButton(f"User {uid}: ₦{v['earnings'] + v['signup_bonus']}", callback_data=f'reject_payout_{uid}')]
-                    for uid, v in pending_payouts.items()
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.message.edit_text("Who’s payout’s getting the axe? 🚫", reply_markup=reply_markup)
-                logger.info("Sent payout rejection options")
-        elif action == 'set_priority':
-            if not users.get('active_orders'):
-                await query.message.edit_text("No orders to juice up! ✅ All quiet!")
-                logger.info("No active orders to prioritize")
-            else:
-                keyboard = [
-                    [InlineKeyboardButton(f"Order {order_id}", callback_data=f'priority_{order_id}')]
-                    for order_id in users['active_orders'].keys()
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.message.edit_text("Which order’s jumping the line? ⏫", reply_markup=reply_markup)
-                logger.info("Sent priority options")
-        elif action == 'cancel_order':
-            if not users.get('active_orders'):
-                await query.message.edit_text("No orders to zap! ✅ All chill!")
-                logger.info("No active orders to cancel")
-            else:
-                keyboard = [
-                    [InlineKeyboardButton(f"Order {order_id}", callback_data=f'cancel_order_{order_id}')]
-                    for order_id in users['active_orders'].keys()
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await query.message.edit_text("Which order’s biting the dust? 🚫", reply_markup=reply_markup)
-                logger.info("Sent cancel order options")
-        elif action == 'generate_code':
-            code = generate_admin_code()
-            users['pending_admin_actions'][code] = {'type': 'admin_code', 'used': False}
-            await save_users()
-            await query.message.edit_text(
-                f"🎟️ Fresh admin code: *{code}*\n"
-                "Perfect for bonuses or VIP tricks—use it wisely!"
-            )
-            logger.info(f"Generated admin code: {code}")
-            await update_admin_dashboard(query)
-        elif data.startswith('admin_approve_order_'):
-            order_id = data.split('_', 3)[3]
-            if order_id in users['pending_orders']:
-                order = users['pending_orders'].pop(order_id)
-                client_id = order['client_id']
-                users['active_orders'][order_id] = order
-                if str(client_id) in users['clients']:
-                    users['clients'][str(client_id)]['step'] = 'completed'
-                await save_users()
-                await query.message.edit_text(f"Order *{order_id}* is live—boom! 💥")
-                logger.info(f"Approved order {order_id}")
-                await application.bot.send_message(int(client_id), f"🎉 Your order *{order_id}* is approved and rolling! 🚀 Check /status!")
-                await update_admin_dashboard(query)
-            else:
-                await query.message.edit_text(f"Order *{order_id}* ghosted us! 👻 Already handled?")
-                logger.info(f"Order {order_id} not found for approval")
-        elif data.startswith('admin_reject_order_'):
-            order_id = data.split('_', 3)[3]
-            if order_id in users['pending_orders']:
-                order = users['pending_orders'].pop(order_id)
-                client_id = order['client_id']
-                if str(client_id) in users['clients']:
-                    del users['clients'][str(client_id)]
-                await save_users()
-                await query.message.edit_text(f"Order *{order_id}* axed! 🚫 Tough call, boss!")
-                logger.info(f"Rejected order {order_id}")
-                await application.bot.send_message(int(client_id), f"😕 Your order *{order_id}* got the boot—hit up support or retry with /client!")
-                await update_admin_dashboard(query)
-            else:
-                await query.message.edit_text(f"Order *{order_id}* vanished! 👻 Already sorted?")
-                logger.info(f"Order {order_id} not found for rejection")
-        elif data.startswith('admin_approve_task_'):
-            completion_id = data.split('_', 3)[3]
-            if completion_id in users['pending_task_completions']:
-                completion = users['pending_task_completions'].pop(completion_id)
-                engager_id = completion['engager_id']
-                task_id = completion['task_id']
-                earnings = completion['earnings']
-                users['engagers'][engager_id]['earnings'] = users['engagers'][engager_id].get('earnings', 0) + earnings
-                if task_id in users['active_orders']:
-                    order = users['active_orders'][task_id]
-                    task_type = completion['task_type']
-                    if task_type in order and order[task_type] > 0:
-                        order[task_type] -= 1
-                        if all(order.get(metric, 0) == 0 for metric in ['follows', 'likes', 'comments']):
-                            users['active_orders'].pop(task_id)
-                            client_id = order['client_id']
-                            try:
-                                await application.bot.send_message(
-                                    chat_id=int(client_id),
-                                    text=f"🎉 Your order *{task_id}* is fully vibed out—donezo!"
-                                )
-                                logger.info(f"Notified client {client_id} of order completion")
-                            except Exception as e:
-                                logger.warning(f"Failed to notify client {client_id}: {e} ⚠️")
-                await save_users()
-                await query.message.edit_text(f"Task *{completion_id}* approved—{engager_id} scores ₦{earnings}! 💰")
-                logger.info(f"Approved task {completion_id} for {engager_id}")
-                try:
-                    await application.bot.send_message(
-                        chat_id=int(engager_id),
-                        text=f"🏆 Task *{task_id}* approved! You bagged ₦{earnings}—check /balance, rockstar!"
-                    )
-                    logger.info(f"Notified engager {engager_id} of task approval")
-                except Exception as e:
-                    logger.warning(f"Failed to notify engager {engager_id}: {e} ⚠️")
-                await update_admin_dashboard(query)
-            else:
-                await query.message.edit_text(f"Task *{completion_id}* slipped away! 👻 Already handled?")
-                logger.info(f"Task {completion_id} not found for approval")
-        elif data.startswith('admin_reject_task_'):
-            completion_id = data.split('_', 3)[3]
-            if completion_id in users['pending_task_completions']:
-                completion = users['pending_task_completions'].pop(completion_id)
-                engager_id = completion['engager_id']
-                task_id = completion['task_id']
-                if task_id in users['engagers'][engager_id].get('claims', []):
-                    users['engagers'][engager_id]['claims'].remove(task_id)
-                await save_users()
-                await query.message.edit_text(f"Task *{completion_id}* nixed! 🚫 Back to the drawing board!")
-                logger.info(f"Rejected task {completion_id}")
-                try:
-                    await application.bot.send_message(
-                        chat_id=int(engager_id),
-                        text=f"😬 Task *{task_id}* got rejected—chat with support for the tea!"
-                    )
-                    logger.info(f"Notified engager {engager_id} of task rejection")
-                except Exception as e:
-                    logger.warning(f"Failed to notify engager {engager_id}: {e} ⚠️")
-                await update_admin_dashboard(query)
-            else:
-                await query.message.edit_text(f"Task *{completion_id}* ghosted! 👻 Already sorted?")
-                logger.info(f"Task {completion_id} not found for rejection")
-        elif data.startswith('approve_payout_'):
-            target_user_id = data.split('_', 2)[2]
-            if target_user_id in users['engagers']:
-                user_data = users['engagers'][target_user_id]
-                if not user_data.get('awaiting_payout'):
-                    await query.message.edit_text(f"No payout pending for *{target_user_id}*! 🤔 All good?")
-                    logger.info(f"No payout to approve for {target_user_id}")
-                    return
-                amount = user_data['earnings'] + user_data['signup_bonus']
-                user_data['earnings'] = 0
-                user_data['signup_bonus'] = 0
-                user_data['awaiting_payout'] = False
-                await save_users()
-                await query.message.edit_text(f"Payout of ₦{amount} for *{target_user_id}* sent—cha-ching! 💸")
-                logger.info(f"Approved payout of ₦{amount} for {target_user_id}")
-                try:
-                    await application.bot.send_message(
-                        chat_id=int(target_user_id),
-                        text=f"💰 Your ₦{amount} payout just dropped—check your bank, baller!"
-                    )
-                    logger.info(f"Notified {target_user_id} of payout approval")
-                except Exception as e:
-                    logger.warning(f"Failed to notify engager {target_user_id}: {e} ⚠️")
-                await update_admin_dashboard(query)
-            else:
-                await query.message.edit_text(f"User *{target_user_id}* is MIA! 👻")
-                logger.info(f"User {target_user_id} not found for payout approval")
-        elif data.startswith('reject_payout_'):
-            target_user_id = data.split('_', 2)[2]
-            if target_user_id in users['engagers']:
-                user_data = users['engagers'][target_user_id]
-                if not user_data.get('awaiting_payout'):
-                    await query.message.edit_text(f"No payout to reject for *{target_user_id}*! 🤔 All clear?")
-                    logger.info(f"No payout to reject for {target_user_id}")
-                    return
-                user_data['awaiting_payout'] = False
-                await save_users()
-                await query.message.edit_text(f"Payout for *{target_user_id}* denied! 🚫 Tough love!")
-                logger.info(f"Rejected payout for {target_user_id}")
-                try:
-                    await application.bot.send_message(
-                        chat_id=int(target_user_id),
-                        text=f"😕 Your payout got a no-go—hit up support for deets!"
-                    )
-                    logger.info(f"Notified {target_user_id} of payout rejection")
-                except Exception as e:
-                    logger.warning(f"Failed to notify engager {target_user_id}: {e} ⚠️")
-                await update_admin_dashboard(query)
-            else:
-                await query.message.edit_text(f"User *{target_user_id}* vanished! 👻")
-                logger.info(f"User {target_user_id} not found for payout rejection")
-        elif data.startswith('priority_'):
-            order_id = data.split('_', 1)[1]
-            if order_id in users['active_orders']:
-                users['active_orders'][order_id]['priority'] = True
-                await save_users()
-                await query.message.edit_text(f"Order *{order_id}* bumped to the front—VIP style! ⏫")
-                logger.info(f"Set priority for order {order_id}")
-                await update_admin_dashboard(query)
-            else:
-                await query.message.edit_text(f"Order *{order_id}* slipped through! 👻 Already gone?")
-                logger.info(f"Order {order_id} not found for priority")
-        elif data.startswith('cancel_order_'):
-            order_id = data.split('_', 2)[2]
-            if order_id in users['active_orders']:
-                order = users['active_orders'].pop(order_id)
-                client_id = order['client_id']
-                await save_users()
-                await query.message.edit_text(f"Order *{order_id}* zapped—gone for good! 🚫")
-                logger.info(f"Canceled order {order_id}")
-                try:
-                    await application.bot.send_message(
-                        chat_id=int(client_id),
-                        text=f"😱 Your order *{order_id}* got canceled by the boss—reach out to support!"
-                    )
-                    logger.info(f"Notified client {client_id} of order cancellation")
-                except Exception as e:
-                    logger.warning(f"Failed to notify client {client_id}: {e} ⚠️")
-                await update_admin_dashboard(query)
-            else:
-                await query.message.edit_text(f"Order *{order_id}* already outta here! 👻")
-                logger.info(f"Order {order_id} not found for cancellation")
-    except Exception as e:
-        logger.error(f"Admin button error: {e}")
-        await application.bot.send_message(chat_id=user_id, text=f"Button’s acting up! 😵 Error: {str(e)}")
-
-# Part 3
-
-# Status command
+# Commands
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     logger.info(f"Received /status command from user {user_id}")
@@ -1183,15 +832,13 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
     else:
         await update.message.reply_text("No status yet, newbie! 😏 Pick a role with /start!")
-    logger.info(f"Sent status to user {user_id}")
 
-# Tasks command
 async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     logger.info(f"Received /tasks command from user {user_id}")
     query = update.callback_query
     if query:
-        await query.answer()  # Acknowledge the button click
+        await query.answer()
 
     if user_id not in users['engagers']:
         message_text = "Join the engager crew first! 💼 Use /engager to jump in!"
@@ -1225,7 +872,6 @@ async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
 
-# Cancel command
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     logger.info(f"Received /cancel command from user {user_id}")
@@ -1242,7 +888,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=reply_markup
     )
 
-# Order command
 async def order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     logger.info(f"Received /order command from user {user_id}")
@@ -1255,7 +900,6 @@ async def order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         await status(update, context)
 
-# Admin command
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     logger.info(f"Received /admin command from user {user_id}")
@@ -1298,7 +942,6 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(message, reply_markup=reply_markup, parse_mode='Markdown')
 
-# Balance command
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     logger.info(f"Received /balance command from user {user_id}")
@@ -1316,13 +959,126 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Hit /withdraw when you’re at ₦1000, baller!"
     )
 
-# Message handler
+async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.effective_user.id)
+    logger.info(f"Received /withdraw command from user {user_id}")
+    if user_id not in users['engagers']:
+        await update.message.reply_text("You’re not an engager yet, fam! 💼 Join with /engager!")
+        return
+    user_data = users['engagers'][user_id]
+    if user_data.get('awaiting_payout'):
+        await update.message.reply_text("Hold up—your payout’s already in the queue! ⏳ Chill and wait!")
+        return
+    total_earnings = user_data.get('earnings', 0) + user_data.get('signup_bonus', 0)
+    if total_earnings < 1000:
+        await update.message.reply_text("Need at least ₦1000 to cash out, hustler! 🏆 Keep grinding!")
+        return
+    user_data['awaiting_payout'] = True
+    await save_users()
+    await update.message.reply_text(
+        f"Your ₦{total_earnings} withdrawal is in the VIP line for review! 💸\n"
+        "We’ll ping you when it’s a done deal!"
+    )
+    message = (
+        f"💰 *Payout Request Alert* 💰\n"
+        f"Engager ID: {user_id}\n"
+        f"Amount: ₦{total_earnings}"
+    )
+    keyboard = [
+        [InlineKeyboardButton("Approve ✅", callback_data=f"approve_payout_{user_id}"),
+         InlineKeyboardButton("Reject ❌", callback_data=f"reject_payout_{user_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await application.bot.send_message(
+        chat_id=ADMIN_GROUP_ID,
+        text=message,
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+async def refer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.effective_user.id)
+    logger.info(f"Received /refer command from user {user_id}")
+    referral_code = users['referrals'].get(user_id, {}).get('code', generate_referral_code(user_id))
+    if user_id not in users['referrals']:
+        users['referrals'][user_id] = {'code': referral_code, 'referred': [], 'earnings': 0}
+        await save_users()
+    referred_count = len(users['referrals'][user_id]['referred'])
+    earnings = users['referrals'][user_id]['earnings']
+    message_text = (
+        f"Spread the vibe and stack cash! 🎁\n"
+        f"Your code: *{referral_code}*\n"
+        f"Share: 'Join with /start {referral_code} for a bonus!'\n"
+        f"Friends joined: {referred_count} | Earnings: ₦{earnings}\n"
+        "Score ₦500 per pal who jumps in and gets active!"
+    )
+    await update.message.reply_text(message_text, parse_mode='Markdown')
+
+async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = str(update.effective_user.id)
+    logger.info(f"Received /leaderboard command from user {user_id}")
+    top_engagers = sorted(
+        users['engagers'].items(),
+        key=lambda x: x[1].get('xp', 0),
+        reverse=True
+    )[:5]
+    leaderboard_text = "🏆 *Vibelift Legends* 🏆\n"
+    for i, (uid, data) in enumerate(top_engagers, 1):
+        level = data.get('level', 1)
+        xp = data.get('xp', 0)
+        leaderboard_text += f"{i}. User {uid} - Level {level} (XP: {xp}) 🌟\n"
+    your_xp = users['engagers'][user_id].get('xp', 0) if user_id in users['engagers'] else 0
+    your_level = users['engagers'][user_id].get('level', 1) if user_id in users['engagers'] else 1
+    leaderboard_text += f"\nYou: Level {your_level} (XP: {your_xp})—keep climbing! 🚀"
+    await update.message.reply_text(leaderboard_text, parse_mode='Markdown')
+
+# Message Handler
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     message = update.message
     text = message.text.lower() if message.text else None
     photo = message.photo
 
+    # Engager screenshot submission
+    if user_id in users['engagers']:
+        user_data = users['engagers'][user_id]
+        current_task = user_data.get('current_task')
+        if current_task and photo and not text:  # Screenshot-only submission
+            completion_id = str(uuid.uuid4())
+            users['pending_task_completions'][completion_id] = {
+                'engager_id': user_id,
+                'task_id': current_task,
+                'screenshot': photo[-1].file_id
+            }
+            user_data['current_task'] = None  # Clear current task
+            await save_users()
+            await message.reply_text(
+                f"Task *{current_task}* submitted for review! ⏳\n"
+                "Admins will check your screenshot—stay tuned!"
+            )
+            task_message = (
+                f"📸 *Task Submission* (ID: {completion_id}) 📸\n"
+                f"Engager ID: {user_id}\n"
+                f"Task ID: {current_task}"
+            )
+            keyboard = [
+                [InlineKeyboardButton("Approve ✅", callback_data=f"admin_approve_task_{completion_id}"),
+                 InlineKeyboardButton("Reject ❌", callback_data=f"admin_reject_task_{completion_id}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await application.bot.send_photo(
+                chat_id=ADMIN_GROUP_ID,
+                photo=photo[-1].file_id,
+                caption=task_message,
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+            return
+        elif current_task and (text or not photo):
+            await message.reply_text("Just a screenshot, fam! 📸 No text needed—try again!")
+            return
+
+    # Client order submission
     if user_id in users['clients']:
         client_data = users['clients'][user_id]
         if client_data['step'] == 'awaiting_order':
@@ -1427,31 +1183,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     "Drop the cash with /pay—let’s roll!"
                 )
                 return
+
     await message.reply_text(
         "Lost in the sauce? 😜 Hit /start to pick a role or /help for the scoop!"
     )
+# Part 4: Webhook, Daily Tips Scheduler, and Main for vibelift_bot.py
 
-# Root route for health checks
+# Flask Routes
 @app.route('/', methods=['GET', 'HEAD'])
 async def root():
     return jsonify({"status": "Vibeliftbot’s alive and kicking! 🚀"}), 200
 
-# Webhook endpoint
 @app.route('/paystack-webhook', methods=['POST'])
 async def paystack_webhook():
     payload = await request.get_json()
     logger.info(f"Paystack webhook received with payload: {json.dumps(payload)}")
     
-    # Only process charge.success events
     if payload.get('event') != 'charge.success':
         logger.info(f"Ignoring non-success event: {payload.get('event')}")
         return jsonify({"status": "ignored"}), 200
     
     reference = payload['data']['reference']
-    order_id = payload['data']['metadata'].get('order_id')  # Use metadata.order_id for lookup
+    order_id = payload['data']['metadata'].get('order_id')
     logger.info(f"Processing webhook for reference: {reference}, order_id: {order_id}")
     
-    # Verify the transaction with Paystack
     url = f"https://api.paystack.co/transaction/verify/{reference}"
     headers = {"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"}
     async with aiohttp.ClientSession() as session:
@@ -1462,20 +1217,17 @@ async def paystack_webhook():
                 logger.error(f"Verification failed for reference {reference}")
                 return jsonify({"status": "verification failed"}), 400
     
-    # Check if the order exists using order_id from metadata
     if not order_id or order_id not in users['pending_orders']:
         logger.warning(f"Order {order_id or reference} not found in pending_orders")
         return jsonify({"status": "order not found"}), 404
     
-    # Move order to active_orders
     order = users['pending_orders'].pop(order_id)
     client_id = order['client_id']
-    order['paystack_reference'] = reference  # Store Paystack reference for tracking
+    order['paystack_reference'] = reference
     users['active_orders'][order_id] = order
     users['clients'][client_id]['step'] = 'awaiting_approval'
     await save_users()
     
-    # Notify client
     try:
         await application.bot.send_message(
             chat_id=int(client_id),
@@ -1486,7 +1238,6 @@ async def paystack_webhook():
     except Exception as e:
         logger.warning(f"Failed to notify client {client_id}: {e}")
     
-    # Notify admin group
     order_message = (
         f"🌟 *New Order Up for Grabs* (ID: {order_id}) 🌟\n"
         f"Client ID: {client_id}\n"
@@ -1504,7 +1255,7 @@ async def paystack_webhook():
     try:
         if 'screenshot' in order and order['screenshot']:
             await application.bot.send_photo(
-                chat_id=REVIEW_GROUP_CHAT_ID,
+                chat_id=ADMIN_GROUP_ID,
                 photo=order['screenshot'],
                 caption=order_message,
                 reply_markup=reply_markup,
@@ -1512,18 +1263,17 @@ async def paystack_webhook():
             )
         else:
             await application.bot.send_message(
-                chat_id=REVIEW_GROUP_CHAT_ID,
+                chat_id=ADMIN_GROUP_ID,
                 text=order_message,
                 reply_markup=reply_markup,
                 parse_mode='Markdown'
             )
-        logger.info(f"Sent order {order_id} to review group {REVIEW_GROUP_CHAT_ID}")
+        logger.info(f"Sent order {order_id} to review group {ADMIN_GROUP_ID}")
     except Exception as e:
-        logger.warning(f"Failed to notify review group {REVIEW_GROUP_CHAT_ID}: {e}")
+        logger.warning(f"Failed to notify review group {ADMIN_GROUP_ID}: {e}")
     
     return jsonify({"status": "success"}), 200
-    
-# Serve success.html (Paystack callback)
+
 @app.route('/static/success.html')
 async def serve_success():
     reference = request.args.get('reference', request.args.get('trxref', ''))
@@ -1533,10 +1283,8 @@ async def serve_success():
     order_id = reference
     order = users['pending_orders'][order_id]
     client_id = order['client_id']
-    # Move to awaiting_approval (temp fix)
     users['clients'][client_id]['step'] = 'awaiting_approval'
     await save_users()
-    # Notify client
     try:
         await application.bot.send_message(
             chat_id=int(client_id),
@@ -1544,8 +1292,7 @@ async def serve_success():
         )
         logger.info(f"Fallback: Notified client {client_id} from success page")
     except Exception as e:
-        logger.warning(f"Fallback notification failed for {client_id}: {e} ⚠️")
-    # Notify admin group
+        logger.warning(f"Fallback notification failed for {client_id}: {e}")
     order_message = (
         f"🌟 *New Order Up for Grabs* (ID: {order_id}) 🌟\n"
         f"Client ID: {client_id}\n"
@@ -1577,7 +1324,7 @@ async def serve_success():
             )
         logger.info(f"Fallback: Sent order {order_id} to review group {ADMIN_GROUP_ID}")
     except Exception as e:
-        logger.warning(f"Failed to notify review group {ADMIN_GROUP_ID}: {e} ⚠️")
+        logger.warning(f"Failed to notify review group {ADMIN_GROUP_ID}: {e}")
     html_content = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -1604,7 +1351,7 @@ async def serve_success():
     logger.info(f"Serving success page for order {order_id}")
     return Response(html_content, mimetype='text/html')
 
-# Daily tips scheduler
+# Daily Tips Scheduler
 async def send_daily_tips():
     while True:
         now = datetime.now(timezone.utc)
@@ -1627,9 +1374,9 @@ async def send_daily_tips():
                     users['daily_tip'][user_id] = now.day
                     await save_users()
                 except Exception as e:
-                    logger.warning(f"Failed to send tip to {user_id}: {e} ⚠️")
+                    logger.warning(f"Failed to send tip to {user_id}: {e}")
 
-# Main function
+# Main Function
 async def main():
     global application, users
     users = await load_users()
@@ -1672,22 +1419,20 @@ async def main():
     application.add_handler(MessageHandler(filters.PHOTO, handle_message))
     application.add_error_handler(error_handler)
 
-    # Initialize the application
     await application.initialize()
     logger.info("Application initialized successfully—let’s vibe!")
 
-    # Set up webhook
-    await application.bot.set_webhook(url=WEBHOOK_URL)
-    logger.info(f"Webhook set to {WEBHOOK_URL}")
+    try:
+        await application.bot.set_webhook(url=WEBHOOK_URL)
+        logger.info(f"Webhook set to {WEBHOOK_URL}")
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {e}")
+        raise
 
-    # Start daily tips scheduler
     asyncio.create_task(send_daily_tips())
     logger.info("Daily tips scheduler fired up! ✨")
 
-    # Wrap Flask app for ASGI
     asgi_app = WsgiToAsgi(app)
-
-    # Run the bot and Flask app together
     config = uvicorn.Config(
         asgi_app,
         host="0.0.0.0",
