@@ -7,6 +7,7 @@ import json
 import asyncio
 from typing import Dict, Any
 from datetime import datetime, timezone
+import aiohttp  # Added for Paystack API calls
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove, CallbackQuery
 from telegram.ext import (
     Application,
@@ -49,26 +50,39 @@ RATE_LIMITS = {
 }
 user_rate_limits = {}
 
-# Package limits
+# Package limits with updated pricing
 package_limits = {
     'bundle': {
         'instagram': {
-            'starter': {'follows': 50, 'likes': 100, 'comments': 20, 'price': 500},
-            'pro': {'follows': 200, 'likes': 400, 'comments': 80, 'price': 1500}
-        },
-        'facebook': {
-            'starter': {'follows': 50, 'likes': 100, 'comments': 20, 'price': 500},
-            'pro': {'follows': 200, 'likes': 400, 'comments': 80, 'price': 1500}
+            'starter': {'follows': 25, 'likes': 50, 'comments': 20, 'price': 8000},
+            'pro': {'follows': 75, 'likes': 150, 'comments': 50, 'price': 30000}
         },
         'tiktok': {
-            'starter': {'follows': 50, 'likes': 100, 'comments': 20, 'price': 500},
-            'pro': {'follows': 200, 'likes': 400, 'comments': 80, 'price': 1500}
+            'starter': {'follows': 25, 'likes': 50, 'comments': 20, 'price': 7000},
+            'pro': {'follows': 75, 'likes': 150, 'comments': 50, 'price': 'price': 26000}
+        },
+        'facebook': {
+            'starter': {'follows': 25, 'likes': 50, 'comments': 20, 'price': 6000},
+            'pro': {'follows': 75, 'likes': 150, 'comments': 50, 'price': 'price': 22000}
         },
         'twitter': {
-            'starter': {'follows': 50, 'likes': 100, 'comments': 20, 'price': 500},
-            'pro': {'follows': 200, 'likes': 400, 'comments': 80, 'price': 1500}
+            'starter': {'follows': 25, 'likes': 50, 'comments': 20, 'price': 5000},
+            'pro': {'follows': 75, 'likes': 150, 'comments': 50, 'price': 'price': 18000}
         }
+    },
+    'custom_rates': {  # Per-unit rates for custom orders
+        'instagram': 50,
+        'tiktok': 45,
+        'facebook': 35,
+        'twitter': 40
     }
+}
+
+# Custom follow prices per handle (manually set)
+custom_follow_prices = {
+    '@myhandle': 60,  # ₦60 per follow for @myhandle
+    'https://instagram.com/username': 50,  # ₦50 per follow for this URL
+    # Add more handles and prices as needed
 }
 
 # Helper functions
@@ -320,6 +334,26 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(message_text)
     logger.info(f"Help sent to user {user_id}")
 
+# Paystack API integration
+async def initialize_paystack_transaction(order_id: str, amount: int, email: str) -> Dict[str, Any]:
+    url = "https://api.paystack.co/transaction/initialize"
+    headers = {
+        "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "amount": amount * 100,  # Convert to kobo
+        "email": email,
+        "reference": order_id,
+        "callback_url": f"https://vibeliftbot.onrender.com/static/success.html?order_id={order_id}"
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, headers=headers, json=payload) as response:
+            if response.status != 200:
+                logger.error(f"Paystack API error: {await response.text()}")
+                return {"error": "Failed to initialize transaction"}
+            return await response.json()
+
 # Pay command
 async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
@@ -337,13 +371,19 @@ async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     order = users['pending_orders'][order_id]
     amount = order['price']
-    # Generate Paystack payment link (simplified for this example)
-    payment_url = f"https://paystack.com/pay/vibeliftbot-{order_id}?amount={amount * 100}"
-    await update.message.reply_text(
-        f"Please complete your payment of ₦{amount} for order {order_id}:\n"
-        f"{payment_url}\n"
-        "After payment, your order will be submitted for admin review."
-    )
+    email = f"{user_id}@vibeliftbot.com"  # Placeholder email; replace with actual user email if available
+    response = await initialize_paystack_transaction(order_id, amount, email)
+    if "error" in response:
+        await update.message.reply_text("Failed to initialize payment. Please try again later or contact support.")
+        return
+    if response.get("status") and response["data"].get("authorization_url"):
+        payment_url = response["data"]["authorization_url"]
+        await update.message.reply_text(
+            f"Please complete your payment of ₦{amount} for order {order_id}:\n{payment_url}\n"
+            "After payment, your order will be submitted for admin review."
+        )
+    else:
+        await update.message.reply_text("Failed to generate payment URL. Please try again later or contact support.")
 
 # Status command
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -570,6 +610,20 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=reply_markup
     )
 
+# Paystack verification
+async def verify_paystack_transaction(reference: str) -> Dict[str, Any]:
+    url = f"https://api.paystack.co/transaction/verify/{reference}"
+    headers = {
+        "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
+        "Content-Type": "application/json"
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers) as response:
+            if response.status != 200:
+                logger.error(f"Paystack verification error: {await response.text()}")
+                return {"error": "Failed to verify transaction"}
+            return await response.json()
+
 # Button handler
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -632,7 +686,7 @@ async def handle_task_button(query: CallbackQuery, user_id: int, user_id_str: st
         order = users['active_orders'][task_id]
         platform = order['platform']
         task_type = random.choice(['follow', 'like', 'comment'])
-        task_earnings = 10  # Example earnings per task
+        task_earnings = 20  # Updated earnings per task
 
         # Add task completion to pending_task_completions
         completion_id = str(uuid.uuid4())
@@ -899,7 +953,6 @@ async def handle_admin_button(query: CallbackQuery, user_id: int, user_id_str: s
             )
         else:
             await query.message.edit_text(f"Order {order_id} is no longer active.")
-
 # Message handler
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
@@ -985,7 +1038,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         if not (10 <= follows <= 500 and 10 <= likes <= 500 and 10 <= comments <= 500):
                             await message.reply_text("Custom metrics must be between 10 and 500!")
                             return
-                        price = (follows + likes + comments) * 5  # Example pricing
+                        # Calculate price with custom follow prices if applicable
+                        base_rate = package_limits['custom_rates'][platform]
+                        follow_price = custom_follow_prices.get(username, base_rate)
+                        price = (follows * follow_price) + (likes * base_rate) + (comments * base_rate)
                         order_details = {
                             'client_id': user_id,
                             'platform': platform,
@@ -1045,10 +1101,12 @@ async def serve_success():
         return Response("Invalid order ID", status=400)
     if order_id not in users['pending_orders']:
         return Response("Order not found", status=404)
+    # Verify the payment with Paystack
+    verification = await verify_paystack_transaction(order_id)
+    if "error" in verification or not verification.get("status") or verification["data"]["status"] != "success":
+        return Response("Payment verification failed", status=400)
     order = users['pending_orders'][order_id]
     client_id = order['client_id']
-    # In a real implementation, verify the payment with Paystack API here
-    # For this example, assume payment is successful
     # Move order to pending_orders for admin review
     users['clients'][client_id]['step'] = 'awaiting_approval'
     await save_users()
