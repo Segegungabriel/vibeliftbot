@@ -650,7 +650,7 @@ async def update_admin_dashboard(query: CallbackQuery) -> None:
 # Button handler
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
-    await query.answer()
+    await query.answer()  # Acknowledge the button click
     user_id = query.from_user.id
     user_id_str = str(user_id)
     data = query.data
@@ -1189,26 +1189,42 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     logger.info(f"Received /tasks command from user {user_id}")
+    query = update.callback_query
+    if query:
+        await query.answer()  # Acknowledge the button click
+
     if user_id not in users['engagers']:
-        await update.message.reply_text("Join the engager crew first! 💼 Use /engager to jump in!")
+        message_text = "Join the engager crew first! 💼 Use /engager to jump in!"
+        if query:
+            await query.message.edit_text(message_text)
+        else:
+            await update.message.reply_text(message_text)
         return
+
     active_orders = users.get('active_orders', {})
     if not active_orders:
-        await update.message.reply_text("No tasks up for grabs right now! ⏰ Check back soon!")
+        message_text = "No tasks up for grabs right now! ⏰ Check back soon!"
+        if query:
+            await query.message.edit_text(message_text)
+        else:
+            await update.message.reply_text(message_text)
         return
+
     keyboard = [
         [InlineKeyboardButton(f"Task {task_id} - ₦20", callback_data=f"task_claim_{task_id}")]
         for task_id in active_orders.keys()
         if task_id not in users['engagers'][user_id].get('claims', [])
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
+    message_text = (
         "🏆 *Task Time!* 🏆\n"
-        "Snag a task, earn ₦20 + 10 XP—let’s hustle!",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
+        "Snag a task, earn ₦20 + 10 XP—let’s hustle!"
     )
-
+    if query:
+        await query.message.edit_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+        
 # Cancel command
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
