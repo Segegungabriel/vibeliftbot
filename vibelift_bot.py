@@ -25,7 +25,7 @@ import uvicorn
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = "https://vibeliftbot.onrender.com/webhook"
 ADMIN_USER_ID = "1518439839"  # Replace with your admin user ID
-REVIEW_GROUP_CHAT_ID = "YOUR_GROUP_CHAT_ID"  # Replace with your group chat ID
+ADMIN_GROUP_ID = os.getenv("ADMIN_GROUP_ID")  # Replace with your group chat ID
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
 ADMINS = [ADMIN_USER_ID]
 
@@ -515,7 +515,7 @@ async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     reply_markup = InlineKeyboardMarkup(keyboard)
     try:
         await application.bot.send_message(
-            chat_id=REVIEW_GROUP_CHAT_ID,
+            chat_id=ADMIN_GROUP_ID,
             text=message,
             reply_markup=reply_markup,
             parse_mode='Markdown'
@@ -591,7 +591,7 @@ async def paystack_webhook():
     try:
         if 'screenshot' in order and order['screenshot']:
             await application.bot.send_photo(
-                chat_id=REVIEW_GROUP_CHAT_ID,
+                chat_id=ADMIN_GROUP_ID,
                 photo=order['screenshot'],
                 caption=order_message,
                 reply_markup=reply_markup,
@@ -599,7 +599,7 @@ async def paystack_webhook():
             )
         else:
             await application.bot.send_message(
-                chat_id=REVIEW_GROUP_CHAT_ID,
+                chat_id=ADMIN_GROUP_ID,
                 text=order_message,
                 reply_markup=reply_markup,
                 parse_mode='Markdown'
@@ -813,7 +813,7 @@ async def handle_task_button(query: CallbackQuery, user_id: int, user_id_str: st
         reply_markup = InlineKeyboardMarkup(keyboard)
         try:
             await application.bot.send_message(
-                chat_id=REVIEW_GROUP_CHAT_ID,
+                chat_id=ADMIN_GROUP_ID,
                 text=task_message,
                 reply_markup=reply_markup,
                 parse_mode='Markdown'
@@ -1476,7 +1476,7 @@ async def serve_success():
     try:
         if 'screenshot' in order and order['screenshot']:
             await application.bot.send_photo(
-                chat_id=REVIEW_GROUP_CHAT_ID,
+                chat_id=ADMIN_GROUP_ID,
                 photo=order['screenshot'],
                 caption=order_message,
                 reply_markup=reply_markup,
@@ -1484,14 +1484,14 @@ async def serve_success():
             )
         else:
             await application.bot.send_message(
-                chat_id=REVIEW_GROUP_CHAT_ID,
+                chat_id=ADMIN_GROUP_ID,
                 text=order_message,
                 reply_markup=reply_markup,
                 parse_mode='Markdown'
             )
-        logger.info(f"Fallback: Sent order {order_id} to review group {REVIEW_GROUP_CHAT_ID}")
+        logger.info(f"Fallback: Sent order {order_id} to review group {ADMIN_GROUP_ID}")
     except Exception as e:
-        logger.warning(f"Failed to notify review group {REVIEW_GROUP_CHAT_ID}: {e} ⚠️")
+        logger.warning(f"Failed to notify review group {ADMIN_GROUP_ID}: {e} ⚠️")
     html_content = f"""
     <!DOCTYPE html>
     <html lang="en">
