@@ -59,15 +59,15 @@ package_limits = {
         },
         'tiktok': {
             'starter': {'follows': 25, 'likes': 50, 'comments': 20, 'price': 7000},
-            'pro': {'follows': 75, 'likes': 150, 'comments': 50, 'price': 'price': 26000}
+            'pro': {'follows': 75, 'likes': 150, 'comments': 50, 'price': 26000}
         },
         'facebook': {
             'starter': {'follows': 25, 'likes': 50, 'comments': 20, 'price': 6000},
-            'pro': {'follows': 75, 'likes': 150, 'comments': 50, 'price': 'price': 22000}
+            'pro': {'follows': 75, 'likes': 150, 'comments': 50, 'price': 22000}
         },
         'twitter': {
             'starter': {'follows': 25, 'likes': 50, 'comments': 20, 'price': 5000},
-            'pro': {'follows': 75, 'likes': 150, 'comments': 50, 'price': 'price': 18000}
+            'pro': {'follows': 75, 'likes': 150, 'comments': 50, 'price': 18000}
         }
     },
     'custom_rates': {  # Per-unit rates for custom orders
