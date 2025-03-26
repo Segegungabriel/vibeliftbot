@@ -539,13 +539,15 @@ async def verify_paystack_transaction(reference: str) -> Dict[str, Any]:
 @app.route('/paystack-webhook', methods=['POST'])
 async def paystack_webhook():
     payload = request.get_json()
-    logger.info(f"Paystack webhook received: {payload}")
+    logger.info(f"Paystack webhook received with payload: {json.dumps(payload, indent=2)}")
     if not payload or payload.get('event') != 'charge.success':
+        logger.info(f"Ignoring webhook event: {payload.get('event', 'no event')}")
         return jsonify({"status": "ignored"}), 200
     reference = payload['data']['reference']
+    logger.info(f"Processing webhook for reference: {reference}")
     verification = await verify_paystack_transaction(reference)
     if "error" in verification or not verification.get("status") or verification["data"]["status"] != "success":
-        logger.error(f"Payment verification failed for {reference}")
+        logger.error(f"Payment verification failed for {reference}: {verification}")
         return jsonify({"status": "error"}), 400
     order_id = reference
     if order_id not in users['pending_orders']:
@@ -566,9 +568,10 @@ async def paystack_webhook():
             ),
             parse_mode='Markdown'
         )
+        logger.info(f"Notified client {client_id} of payment success")
     except Exception as e:
         logger.warning(f"Failed to notify client {client_id}: {e} ⚠️")
-    # Send to review group
+    # Send to review group (unchanged, just for context)
     order_message = (
         f"🌟 *New Order Up for Grabs* (ID: {order_id}) 🌟\n"
         f"Client ID: {client_id}\n"
@@ -598,6 +601,7 @@ async def paystack_webhook():
                 reply_markup=reply_markup,
                 parse_mode='Markdown'
             )
+        logger.info(f"Sent order {order_id} to review group")
     except Exception as e:
         logger.warning(f"Failed to notify review group: {e} ⚠️")
     return jsonify({"status": "success"}), 200
@@ -1400,9 +1404,14 @@ async def webhook():
 # Serve success.html (Paystack callback)
 @app.route('/static/success.html')
 async def serve_success():
-    order_id = request.args.get('order_id', '')
-    if not order_id or order_id not in users['pending_orders']:
-        return Response("Oops, order’s lost in the vibe! 🚫 Retry with /client!", status=400)
+    reference = request.args.get('reference', request.args.get('trxref', ''))
+    if not reference or reference not in users['pending_orders']:
+        logger.warning(f"Success page hit with invalid/missing reference: {request.args}")
+        return Response(
+            "Oops, order’s lost in the vibe! 🚫 Check /status or retry with /client!",
+            status=400
+        )
+    order_id = reference  # Paystack’s reference matches our order_id
     html_content = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -1426,6 +1435,7 @@ async def serve_success():
     </body>
     </html>
     """
+    logger.info(f"Serving success page for order {order_id}")
     return Response(html_content, mimetype='text/html')
 
 # Daily tips scheduler
