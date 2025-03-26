@@ -19,7 +19,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from asgiref.wsgi import WsgiToAsgi  # Updated import
+from asgiref.wsgi import WsgiToAsgi  # Updated import from previous fix
 import uvicorn
 import pymongo
 from pymongo import MongoClient
