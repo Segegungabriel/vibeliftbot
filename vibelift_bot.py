@@ -308,7 +308,7 @@ async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.callback_query:
         query = update.callback_query
         await query.answer()
-         wait query.message.edit_text(message_text, reply_markup=reply_markup)
+         await query.message.edit_text(message_text, reply_markup=reply_markup)
     else:
         await update.message.reply_text(message_text, reply_markup=reply_markup)
     return
