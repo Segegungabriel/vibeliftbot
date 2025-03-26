@@ -308,9 +308,9 @@ async def engager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.callback_query:
         query = update.callback_query
         await query.answer()
-         await query.message.edit_text(message_text, reply_markup=reply_markup)
+         wait query.message.edit_text(message_text, reply_markup=reply_markup)
     else:
-            await update.message.reply_text(message_text, reply_markup=reply_markup)
+        await update.message.reply_text(message_text, reply_markup=reply_markup)
     return
     users['engagers'][user_id] = {
         'earnings': 0,
