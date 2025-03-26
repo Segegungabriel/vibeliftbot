@@ -1201,8 +1201,11 @@ async def main():
     application.add_handler(MessageHandler(filters.PHOTO, handle_message))
     application.add_error_handler(error_handler)
 
+    # Initialize the application
+    await application.initialize()  # Added this line to fix the error
+
     # Set up webhook
-    await application.bot.set_webhook(url=WEBHOOK_URL)  # Updated to remove extra /webhook
+    await application.bot.set_webhook(url=WEBHOOK_URL)
     logger.info(f"Webhook set to {WEBHOOK_URL}")
 
     # Wrap Flask app for ASGI
@@ -1212,7 +1215,7 @@ async def main():
     config = uvicorn.Config(
         asgi_app,
         host="0.0.0.0",
-        port=int(os.getenv("PORT", 10000)),
+        port=int(os.getenv("PORT", 8000)),
         log_level="info"
     )
     server = uvicorn.Server(config)
